@@ -1,5 +1,7 @@
 // Shared script for login, register, and todos pages
-const SERVER_URL = "http://localhost:8080";
+const SERVER_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
+    ? "http://localhost:8080"
+    : "https://your-backend-app.onrender.com"; // Replace this with your actual Render backend URL after deploying
 const token = localStorage.getItem("token");
 
 // Login page logic
