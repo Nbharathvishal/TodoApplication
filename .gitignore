@@ -1,0 +1,18 @@
+# IDE / Editor folders
+.vscode/
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# System Files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Build and Dependency directories
+**/target/
+**/bin/
+**/build/
