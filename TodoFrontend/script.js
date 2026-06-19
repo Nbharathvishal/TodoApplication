@@ -1,7 +1,7 @@
 // Shared script for login, register, and todos pages
-const SERVER_URL = window.location.hostname === "localhost" || window.location.hostname === "127.0.0.1"
-    ? "http://localhost:8080"
-    : "https://todo-backend-zyqf.onrender.com";
+const SERVER_URL = window.location.hostname.includes("onrender.com")
+    ? "https://todo-backend-zyqf.onrender.com"
+    : "http://localhost:8080";
 const token = localStorage.getItem("token");
 
 // Login page logic
@@ -16,10 +16,8 @@ fetch(`${SERVER_URL}/auth/login` ,{
 })
 .then(response =>{
     if(!response.ok){
-        throw new  Error(data.message || "Login Failed")
-       
+        return response.text().then(text => { throw new Error(text || "Login Failed") });
     }
-    
     return response.json();
 })
 
