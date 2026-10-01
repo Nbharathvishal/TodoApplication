@@ -2,82 +2,96 @@
 const SERVER_URL = window.location.hostname.includes("onrender.com")
     ? "https://todo-backend-zyqf.onrender.com"
     : "http://localhost:8080";
-const token = localStorage.getItem("token");
+
+function getToken() {
+    return localStorage.getItem("token");
+}
+
+function getLoggedInEmail() {
+    return localStorage.getItem("userEmail") || "User";
+}
+
+// Logout logic
+function logout() {
+    localStorage.removeItem("token");
+    localStorage.removeItem("userEmail");
+    window.location.href = "login.html";
+}
 
 // Login page logic
 function login() {
-    const email= document.getElementById("email").value;
-const password= document.getElementById("password").value;
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
 
-fetch(`${SERVER_URL}/auth/login` ,{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({email,password})
-})
-.then(response =>{
-    if(!response.ok){
-        return response.text().then(text => { throw new Error(text || "Login Failed") });
+    if (!email || !password) {
+        alert("Please enter both email and password");
+        return;
     }
-    return response.json();
-})
 
-.then(data =>{
-    localStorage.setItem("token",data.token);
-    window.location.href = "todos.html";
-})
-
-
-
-
-.catch(error =>{
-    alert(error.message)
-})
-
-
-
+    fetch(`${SERVER_URL}/auth/login`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+    })
+    .then(response => {
+        if (!response.ok) {
+            return response.text().then(text => { throw new Error(text || "Login Failed"); });
+        }
+        return response.json();
+    })
+    .then(data => {
+        localStorage.setItem("token", data.token);
+        localStorage.setItem("userEmail", email);
+        window.location.href = "todos.html";
+    })
+    .catch(error => {
+        alert(error.message);
+    });
 }
 
 // Register page logic
-function register() { 
-const email= document.getElementById("email").value;
-const password= document.getElementById("password").value;
+function register() {
+    const email = document.getElementById("email").value.trim();
+    const password = document.getElementById("password").value;
 
-fetch(`${SERVER_URL}/auth/register` ,{
-    method:"POST",
-    headers:{"Content-Type":"application/json"},
-    body:JSON.stringify({email,password})
-})
-.then(response =>{
-    if(response.ok){
-        alert("Registration Successfull , Please Login");
-        window.location.href = "login.html"
-    } else{
-        return response.json().then(data => {throw new Error(data.message || "Registration Failed")});
+    if (!email || !password) {
+        alert("Please enter both email and password");
+        return;
     }
-}).catch(error =>{
-    alert(error.message)
-})
 
-
+    fetch(`${SERVER_URL}/auth/register`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password })
+    })
+    .then(response => {
+        if (response.ok) {
+            alert("Registration Successful, Please Login");
+            window.location.href = "login.html";
+        } else {
+            return response.text().then(text => { throw new Error(text || "Registration Failed"); });
+        }
+    })
+    .catch(error => {
+        alert(error.message);
+    });
 }
 
 // Todos page logic
 function createTodoCard(todo) {
-
     const card = document.createElement("div");
     card.className = "todo-card";
 
     const checkbox = document.createElement("input");
     checkbox.type = "checkbox";
+    checkbox.className = "todo-checkbox";
     checkbox.checked = todo.completed;
 
     checkbox.addEventListener("change", function () {
-
         const updatedTodo = {
             ...todo,
             completed: checkbox.checked
         };
-
         updateTodoStatus(updatedTodo);
     });
 
@@ -104,56 +118,66 @@ function createTodoCard(todo) {
 }
 
 function loadTodos() {
-
-    if (!token) {
+    const currentToken = getToken();
+    if (!currentToken) {
         alert("Please Login First");
         window.location.href = "login.html";
         return;
     }
 
+    // Update email display if available
+    const emailElem = document.getElementById("user-email");
+    if (emailElem) {
+        emailElem.textContent = `Logged in: ${getLoggedInEmail()}`;
+    }
+
     fetch(`${SERVER_URL}/api/todo`, {
         method: "GET",
         headers: {
-            Authorization: `Bearer ${token}`
+            Authorization: `Bearer ${currentToken}`
         }
     })
     .then(response => {
-
         if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                localStorage.removeItem("token");
+                throw new Error("Session expired. Please log in again.");
+            }
             throw new Error("Failed to get Todos");
         }
-
         return response.json();
     })
-
     .then(todos => {
-
         const todoList = document.getElementById("todo-list");
         todoList.innerHTML = "";
 
         if (!todos || todos.length === 0) {
-
-            todoList.innerHTML =
-                '<p id="empty-message">No Todos yet. Add one below!</p>';
-
+            todoList.innerHTML = '<p id="empty-message">No Todos yet. Add one below!</p>';
         } else {
-
             todos.forEach(todo => {
                 todoList.appendChild(createTodoCard(todo));
             });
-
         }
     })
-
     .catch(error => {
         console.error(error);
-
-        document.getElementById("todo-list").innerHTML =
-            '<p style="color:red">Failed to load Todos. Please try again.</p>';
+        if (error.message.includes("Session expired")) {
+            alert(error.message);
+            window.location.href = "login.html";
+        } else {
+            document.getElementById("todo-list").innerHTML =
+                '<p style="color:red">Failed to load Todos. Please try again.</p>';
+        }
     });
 }
 
 function addTodo() {
+    const currentToken = getToken();
+    if (!currentToken) {
+        alert("Please Login First");
+        window.location.href = "login.html";
+        return;
+    }
 
     const input = document.getElementById("new-todo");
     const todoText = input.value.trim();
@@ -167,7 +191,7 @@ function addTodo() {
         method: "POST",
         headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`
+            Authorization: `Bearer ${currentToken}`
         },
         body: JSON.stringify({
             title: todoText,
@@ -176,48 +200,46 @@ function addTodo() {
         })
     })
     .then(response => {
-
         if (!response.ok) {
             throw new Error("Failed to Add Todo");
         }
-
         return response.json();
     })
-
-    .then(newTodo => {
+    .then(() => {
         input.value = "";
         loadTodos();
     })
-
     .catch(error => {
         console.error(error);
         alert(error.message);
     });
 }
+
 function updateTodoStatus(todo) {
+    const currentToken = getToken();
+    if (!currentToken) {
+        alert("Please Login First");
+        window.location.href = "login.html";
+        return;
+    }
 
     fetch(`${SERVER_URL}/api/todo`, {
         method: "PUT",
         headers: {
             "Content-Type": "application/json",
-            Authorization: `Bearer ${token}`
+            Authorization: `Bearer ${currentToken}`
         },
         body: JSON.stringify(todo)
     })
-
     .then(response => {
-
         if (!response.ok) {
             throw new Error("Failed to Update Todo");
         }
-
         return response.json();
     })
-
-    .then(updatedTodo => {
+    .then(() => {
         loadTodos();
     })
-
     .catch(error => {
         console.error(error);
         alert(error.message);
@@ -225,27 +247,28 @@ function updateTodoStatus(todo) {
 }
 
 function deleteTodo(id) {
+    const currentToken = getToken();
+    if (!currentToken) {
+        alert("Please Login First");
+        window.location.href = "login.html";
+        return;
+    }
 
     fetch(`${SERVER_URL}/api/todo/${id}`, {
         method: "DELETE",
         headers: {
-            Authorization: `Bearer ${token}`
+            Authorization: `Bearer ${currentToken}`
         }
     })
-
     .then(response => {
-
         if (!response.ok) {
             throw new Error("Failed to Delete Todo");
         }
-
         return response.text();
     })
-
     .then(() => {
         loadTodos();
     })
-
     .catch(error => {
         console.error(error);
         alert(error.message);
@@ -258,3 +281,4 @@ document.addEventListener("DOMContentLoaded", function () {
         loadTodos();
     }
 });
+

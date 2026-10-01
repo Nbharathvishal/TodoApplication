@@ -73,15 +73,24 @@ public class TodoController {
     //Updating the Todo
     @PutMapping()
     ResponseEntity<Todo> updateTodo(@RequestBody Todo todo){
-        User user = getAuthenticatedUser();
-        return new ResponseEntity<>(todoService.updateTodo(todo, user), HttpStatus.OK);
+        try {
+            User user = getAuthenticatedUser();
+            return new ResponseEntity<>(todoService.updateTodo(todo, user), HttpStatus.OK);
+        } catch (RuntimeException exception) {
+            return new ResponseEntity<>(null, HttpStatus.NOT_FOUND);
+        }
     }
 
     //Delete Todo by Id
     @DeleteMapping("/{id}")
-    void deleteById(@PathVariable Long id){
-        User user = getAuthenticatedUser();
-        todoService.deleteTodoByIdAndUser(id, user);
+    ResponseEntity<Void> deleteById(@PathVariable Long id){
+        try {
+            User user = getAuthenticatedUser();
+            todoService.deleteTodoByIdAndUser(id, user);
+            return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+        } catch (RuntimeException exception) {
+            return new ResponseEntity<>(HttpStatus.NOT_FOUND);
+        }
     }
 }
 
