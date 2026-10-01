@@ -1,7 +1,12 @@
 // Shared script for login, register, and todos pages
-const SERVER_URL = window.location.hostname.includes("onrender.com")
-    ? "https://todo-backend-zyqf.onrender.com"
-    : "http://localhost:8080";
+const isLocal =
+    window.location.hostname === "localhost" ||
+    window.location.hostname === "127.0.0.1" ||
+    window.location.protocol === "file:";
+
+const SERVER_URL = isLocal
+    ? "http://localhost:8080"
+    : "https://todo-backend-zyqf.onrender.com";
 
 function getToken() {
     return localStorage.getItem("token");
