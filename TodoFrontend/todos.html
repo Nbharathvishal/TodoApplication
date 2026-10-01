@@ -20,10 +20,10 @@
             <p id="empty-message">Loading your todos...</p>
         </div>
 
-        <div class="add-todo">
-            <input type="text" id="new-todo" placeholder="Add new todo" />
-            <button onclick="addTodo()">Add</button>
-        </div>
+        <form class="add-todo" onsubmit="event.preventDefault(); addTodo();">
+            <input type="text" id="new-todo" placeholder="Add new todo" required />
+            <button type="submit">Add</button>
+        </form>
     </div>
 
     <script src="script.js"></script>

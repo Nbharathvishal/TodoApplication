@@ -9,10 +9,16 @@
 <body>
 <div class="container">
     <h2>Register</h2>
-    <input type="email" id="email" placeholder="Email" required />
-    <input type="password" id="password" placeholder="Password" required />
-    <button onclick="register()">Register</button>
-    <p>Already have an account? <a href="login.html">Login here</a></p>
+    <form id="register-form" onsubmit="event.preventDefault(); register();">
+        <div class="form-group">
+            <input type="email" id="email" placeholder="Email" required autocomplete="email" />
+            <input type="password" id="password" placeholder="Password" required autocomplete="new-password" />
+        </div>
+        <button type="submit" id="register-btn">Register</button>
+    </form>
+    <p style="text-align: center; margin-top: 1rem;">
+        Already have an account? <a href="login.html">Login here</a>
+    </p>
 </div>
 
 <script src="script.js"></script>

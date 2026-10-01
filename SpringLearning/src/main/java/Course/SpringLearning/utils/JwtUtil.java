@@ -13,16 +13,13 @@ import java.util.Date;
 @Component
 public class JwtUtil {
 
-    private static final String SECRET =
-            "mysecretkeymysecretkeymysecretkey123456";
-
     private static final long EXPIRATION =
             1000 * 60 * 60; // 1 hour
 
-    private final Key secretKey =
-            Keys.hmacShaKeyFor(
-                    SECRET.getBytes(StandardCharsets.UTF_8)
-            );
+    private final Key secretKey = Keys.hmacShaKeyFor(
+            System.getenv().getOrDefault("JWT_SECRET", "mysecretkeymysecretkeymysecretkey123456")
+                    .getBytes(StandardCharsets.UTF_8)
+    );
 
 
     public String generateToken(String email){

@@ -10,12 +10,13 @@
 <div class="container">
     <h2>Login</h2>
 
-    <div class="form-group">
-        <input type="email" id="email" placeholder="Email" />
-        <input type="password" id="password" placeholder="Password" />
-    </div>
-
-    <button onclick="login()">Login</button>
+    <form id="login-form" onsubmit="event.preventDefault(); login();">
+        <div class="form-group">
+            <input type="email" id="email" placeholder="Email" required autocomplete="email" />
+            <input type="password" id="password" placeholder="Password" required autocomplete="current-password" />
+        </div>
+        <button type="submit" id="login-btn">Login</button>
+    </form>
 
     <p style="text-align: center; margin-top: 1rem;">
         Don't have an account? <a href="register.html">Register here</a>

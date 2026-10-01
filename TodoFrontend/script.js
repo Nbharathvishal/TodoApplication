@@ -27,10 +27,16 @@ function logout() {
 function login() {
     const email = document.getElementById("email").value.trim();
     const password = document.getElementById("password").value;
+    const btn = document.getElementById("login-btn");
 
     if (!email || !password) {
         alert("Please enter both email and password");
         return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Logging in...";
     }
 
     fetch(`${SERVER_URL}/auth/login`, {
@@ -51,6 +57,12 @@ function login() {
     })
     .catch(error => {
         alert(error.message);
+    })
+    .finally(() => {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = "Login";
+        }
     });
 }
 
@@ -58,10 +70,16 @@ function login() {
 function register() {
     const email = document.getElementById("email").value.trim();
     const password = document.getElementById("password").value;
+    const btn = document.getElementById("register-btn");
 
     if (!email || !password) {
         alert("Please enter both email and password");
         return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Registering...";
     }
 
     fetch(`${SERVER_URL}/auth/register`, {
@@ -79,6 +97,12 @@ function register() {
     })
     .catch(error => {
         alert(error.message);
+    })
+    .finally(() => {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = "Register";
+        }
     });
 }
 
