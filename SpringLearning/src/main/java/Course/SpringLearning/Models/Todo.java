@@ -9,6 +9,7 @@ import lombok.AllArgsConstructor;
 import lombok.Data;
 import lombok.NoArgsConstructor;
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonIgnoreProperties;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.ManyToOne;
 
@@ -16,6 +17,7 @@ import jakarta.persistence.ManyToOne;
 @Data
 @NoArgsConstructor
 @AllArgsConstructor
+@JsonIgnoreProperties(ignoreUnknown = true)
 public class Todo {
 
     @Id
@@ -35,6 +37,5 @@ public class Todo {
     @JoinColumn(name = "user_id", nullable = true)
     @JsonIgnore
     private User user;
-
 
 }
