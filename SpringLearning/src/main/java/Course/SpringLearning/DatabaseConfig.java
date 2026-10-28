@@ -5,6 +5,7 @@ import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Primary;
 import javax.sql.DataSource;
+import java.net.URI;
 
 @Configuration
 public class DatabaseConfig {
@@ -18,41 +19,66 @@ public class DatabaseConfig {
         }
 
         if (url != null && !url.isEmpty()) {
-            // Check if it is a standard PostgreSQL URI format
-            if (url.startsWith("jdbc:")) {
-                String cleanUrl = url.substring(5);
-                if (cleanUrl.startsWith("postgresql://")) {
-                    parseAndConfigure(cleanUrl, properties);
-                }
-            } else if (url.startsWith("postgresql://")) {
-                parseAndConfigure(url, properties);
-            } else {
-                properties.setUrl(url);
-            }
+            configureDatabaseUrl(url, properties);
         }
 
         return properties.initializeDataSourceBuilder().build();
     }
 
-    private void parseAndConfigure(String uriStr, DataSourceProperties properties) {
-        // Remove postgresql:// prefix
-        String cleanUri = uriStr.substring(13);
-        
-        int atIndex = cleanUri.indexOf('@');
-        if (atIndex != -1) {
-            String credentials = cleanUri.substring(0, atIndex);
-            String hostAndDb = cleanUri.substring(atIndex + 1);
-            
-            int colonIndex = credentials.indexOf(':');
-            if (colonIndex != -1) {
-                properties.setUsername(credentials.substring(0, colonIndex));
-                properties.setPassword(credentials.substring(colonIndex + 1));
-            } else {
-                properties.setUsername(credentials);
+    private void configureDatabaseUrl(String rawUrl, DataSourceProperties properties) {
+        try {
+            String cleanUrl = rawUrl.trim();
+
+            if (cleanUrl.startsWith("jdbc:postgresql://")) {
+                properties.setUrl(cleanUrl);
+                return;
             }
-            properties.setUrl("jdbc:postgresql://" + hostAndDb);
-        } else {
-            properties.setUrl("jdbc:postgresql://" + cleanUri);
+
+            if (cleanUrl.startsWith("jdbc:")) {
+                cleanUrl = cleanUrl.substring(5);
+            }
+
+            // Normalise schema to standard postgresql://
+            if (cleanUrl.startsWith("postgres://")) {
+                cleanUrl = "postgresql://" + cleanUrl.substring(11);
+            }
+
+            if (cleanUrl.startsWith("postgresql://")) {
+                URI uri = new URI(cleanUrl);
+
+                String userInfo = uri.getUserInfo();
+                if (userInfo != null && !userInfo.isEmpty()) {
+                    String[] userParts = userInfo.split(":", 2);
+                    properties.setUsername(userParts[0]);
+                    if (userParts.length > 1) {
+                        properties.setPassword(userParts[1]);
+                    }
+                }
+
+                String host = uri.getHost();
+                int port = uri.getPort() > 0 ? uri.getPort() : 5432;
+                String path = uri.getPath(); // starts with /
+                String query = uri.getQuery();
+
+                StringBuilder jdbcUrl = new StringBuilder("jdbc:postgresql://")
+                        .append(host)
+                        .append(":")
+                        .append(port)
+                        .append(path != null ? path : "");
+
+                if (query != null && !query.isEmpty()) {
+                    jdbcUrl.append("?").append(query);
+                } else if (!"localhost".equals(host) && !"127.0.0.1".equals(host)) {
+                    // For cloud databases (Render/Neon/Supabase/etc.) default to sslmode=require
+                    jdbcUrl.append("?sslmode=require");
+                }
+
+                properties.setUrl(jdbcUrl.toString());
+            } else {
+                properties.setUrl(cleanUrl);
+            }
+        } catch (Exception e) {
+            properties.setUrl(rawUrl);
         }
     }
 }
