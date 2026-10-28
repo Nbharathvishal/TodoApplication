@@ -68,9 +68,6 @@ public class DatabaseConfig {
 
                 if (query != null && !query.isEmpty()) {
                     jdbcUrl.append("?").append(query);
-                } else if (!"localhost".equals(host) && !"127.0.0.1".equals(host)) {
-                    // For cloud databases (Render/Neon/Supabase/etc.) default to sslmode=require
-                    jdbcUrl.append("?sslmode=require");
                 }
 
                 properties.setUrl(jdbcUrl.toString());
