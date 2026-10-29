@@ -1,0 +1,60 @@
+<svg width="800" height="400" viewBox="0 0 800 400" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <!-- Background Linear Gradient -->
+    <linearGradient id="bgGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#05110C" />
+      <stop offset="50%" stop-color="#171717" />
+      <stop offset="100%" stop-color="#081810" />
+    </linearGradient>
+
+    <!-- Radial Glows -->
+    <radialGradient id="forestGlow" cx="20%" cy="30%" r="60%">
+      <stop offset="0%" stop-color="#15803d" stop-opacity="0.25" />
+      <stop offset="70%" stop-color="#05110C" stop-opacity="0" />
+    </radialGradient>
+
+    <radialGradient id="crimsonGlow" cx="85%" cy="80%" r="55%">
+      <stop offset="0%" stop-color="#A51C18" stop-opacity="0.30" />
+      <stop offset="80%" stop-color="#171717" stop-opacity="0" />
+    </radialGradient>
+
+    <!-- Grid Pattern -->
+    <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+      <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#ffffff" stroke-width="0.5" stroke-opacity="0.04" />
+    </pattern>
+
+    <!-- Subtle Diagonal Accent Lines -->
+    <linearGradient id="accentLine1" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#22c55e" stop-opacity="0.4" />
+      <stop offset="100%" stop-color="#22c55e" stop-opacity="0" />
+    </linearGradient>
+
+    <linearGradient id="accentLine2" x1="100%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#A51C18" stop-opacity="0.5" />
+      <stop offset="100%" stop-color="#A51C18" stop-opacity="0" />
+    </linearGradient>
+  </defs>
+
+  <!-- Base Background -->
+  <rect width="800" height="400" fill="url(#bgGrad)" />
+
+  <!-- Ambient Light Orbs -->
+  <rect width="800" height="400" fill="url(#forestGlow)" />
+  <rect width="800" height="400" fill="url(#crimsonGlow)" />
+
+  <!-- Geometric Grid Layer -->
+  <rect width="800" height="400" fill="url(#grid)" />
+
+  <!-- Stylized Dynamic Accents (Diagonal Blades) -->
+  <path d="M-50 450 L350 -50 L380 -50 L-20 450 Z" fill="url(#accentLine1)" />
+  <path d="M450 450 L850 50 L870 50 L470 450 Z" fill="url(#accentLine2)" />
+
+  <!-- Modern Floating Polygons -->
+  <polygon points="120,60 160,90 140,130 90,110" fill="#22c55e" fill-opacity="0.04" stroke="#22c55e" stroke-opacity="0.1" stroke-width="1"/>
+  <polygon points="680,260 740,290 710,350 650,320" fill="#A51C18" fill-opacity="0.05" stroke="#A51C18" stroke-opacity="0.15" stroke-width="1"/>
+  <circle cx="720" cy="100" r="40" fill="none" stroke="#22c55e" stroke-opacity="0.08" stroke-width="1" stroke-dasharray="4 4" />
+  <circle cx="100" cy="300" r="50" fill="none" stroke="#A51C18" stroke-opacity="0.08" stroke-width="1" stroke-dasharray="6 6" />
+
+  <!-- Subtle Vignette Frame -->
+  <rect width="800" height="400" fill="none" stroke="#303030" stroke-opacity="0.3" stroke-width="1" />
+</svg>

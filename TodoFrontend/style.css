@@ -1010,6 +1010,205 @@ body.auth-body {
     transition: width 0.5s ease;
 }
 
+/* Dynamic Media Stage: Quote Card & Achievement Video */
+.achievement-media-stage {
+    position: relative;
+    width: 100%;
+    min-height: 200px;
+    margin: 1rem 0;
+    border-radius: var(--radius-md);
+    overflow: hidden;
+}
+
+/* Motivational Quote Card */
+.achievement-quote-card {
+    position: relative;
+    width: 100%;
+    min-height: 200px;
+    border-radius: var(--radius-md);
+    background-color: var(--bg-charcoal);
+    background-image: url('assets/images/quote-bg.svg');
+    background-size: cover;
+    background-position: center;
+    background-repeat: no-repeat;
+    border: 1px solid var(--border-color);
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    align-items: center;
+    overflow: hidden;
+    box-shadow: inset 0 0 25px rgba(0, 0, 0, 0.7);
+    transition: all var(--transition-normal);
+}
+
+.quote-card-overlay {
+    position: absolute;
+    inset: 0;
+    background: linear-gradient(135deg, rgba(5, 17, 12, 0.85) 0%, rgba(23, 23, 23, 0.90) 100%);
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
+    z-index: 1;
+}
+
+.quote-card-content {
+    position: relative;
+    z-index: 2;
+    padding: 1.25rem 1.5rem;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 0.75rem;
+    width: 100%;
+}
+
+.quote-icon {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    color: #22c55e;
+    opacity: 0.9;
+    filter: drop-shadow(0 2px 4px rgba(0, 0, 0, 0.5));
+}
+
+.quote-text {
+    margin: 0;
+    padding: 0;
+    font-size: 1.15rem;
+    font-weight: 700;
+    font-style: italic;
+    color: var(--text-primary);
+    line-height: 1.4;
+    letter-spacing: -0.01em;
+    text-shadow: 0 2px 8px rgba(0, 0, 0, 0.8);
+    max-width: 90%;
+}
+
+/* Play Achievement Video Button */
+.btn-achievement-play {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.55rem 1.25rem;
+    font-size: 0.875rem;
+    font-weight: 600;
+    color: #ffffff;
+    background: linear-gradient(135deg, #A51C18 0%, #c52420 100%);
+    border: 1px solid rgba(255, 255, 255, 0.2);
+    border-radius: var(--radius-md);
+    cursor: pointer;
+    box-shadow: 0 4px 14px rgba(165, 28, 24, 0.45);
+    transition: transform 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+}
+
+.btn-achievement-play:hover {
+    background: linear-gradient(135deg, #be201c 0%, #e02824 100%);
+    box-shadow: 0 6px 18px rgba(165, 28, 24, 0.6);
+    transform: translateY(-1px);
+}
+
+.btn-achievement-play:active {
+    transform: translateY(0);
+}
+
+.btn-achievement-play:focus-visible {
+    outline: 2px solid #fca5a5;
+    outline-offset: 2px;
+}
+
+/* Video Player Wrapper */
+.achievement-video-wrap {
+    position: relative;
+    width: 100%;
+    min-height: 220px;
+    max-height: 320px;
+    aspect-ratio: 16 / 9;
+    background-color: #000000;
+    border-radius: var(--radius-md);
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    box-shadow: 0 6px 24px rgba(0, 0, 0, 0.6);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.achievement-video {
+    width: 100%;
+    height: auto;
+    aspect-ratio: 16 / 9;
+    min-height: 200px;
+    max-height: 320px;
+    flex: 1 1 auto;
+    object-fit: contain;
+    background-color: #000000;
+    display: block;
+    border-radius: inherit;
+}
+
+.achievement-debug {
+    margin-top: 0.65rem;
+    padding: 0.55rem 0.7rem;
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    color: var(--text-secondary);
+    font-size: 0.7rem;
+}
+
+.achievement-debug summary { cursor: pointer; font-weight: 700; color: var(--text-primary); }
+.achievement-debug dl { display: grid; grid-template-columns: 7rem minmax(0, 1fr); gap: 0.25rem 0.5rem; margin: 0.5rem 0 0; }
+.achievement-debug dt { color: var(--text-muted); }
+.achievement-debug dd { margin: 0; overflow-wrap: anywhere; color: var(--text-primary); }
+
+/* Autoplay Fallback Overlay */
+.video-autoplay-fallback {
+    position: absolute;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.65);
+    backdrop-filter: blur(2px);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 5;
+}
+
+.btn-video-fallback-play {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.75rem 1.5rem;
+    font-size: 1rem;
+    font-weight: 700;
+    color: #ffffff;
+    background: linear-gradient(135deg, #A51C18 0%, #e11d48 100%);
+    border: 2px solid rgba(255, 255, 255, 0.3);
+    border-radius: var(--radius-full);
+    cursor: pointer;
+    box-shadow: 0 6px 20px rgba(165, 28, 24, 0.6);
+    transition: transform 0.2s ease, box-shadow 0.2s ease;
+}
+
+.btn-video-fallback-play:hover {
+    transform: scale(1.05);
+    box-shadow: 0 8px 25px rgba(225, 29, 72, 0.8);
+}
+
+/* Close Video Button */
+.btn-close-video {
+    display: none !important;
+}
+
+/* Reduced Motion Respect */
+@media (prefers-reduced-motion: reduce) {
+    .achievement-card,
+    .btn-achievement-play,
+    .achievement-meter-fill {
+        transition: none !important;
+        animation: none !important;
+    }
+}
+
 /* Streaks & History Card */
 .streaks-card {
     background-color: var(--bg-charcoal-subtle);

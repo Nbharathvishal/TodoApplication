@@ -281,6 +281,47 @@
                                     </div>
                                     <div id="achievement-date" class="achievement-date">Today</div>
                                 </div>
+
+                                <!-- Dynamic Achievement Media Section (Quote Card / Video Player) -->
+                                <div id="achievement-media-stage" class="achievement-media-stage">
+                                    <!-- Motivational Quote Card with Dark Overlay & Background Image -->
+                                    <div id="achievement-quote-card" class="achievement-quote-card" role="region" aria-label="Motivational Quote Card">
+                                        <div class="quote-card-overlay"></div>
+                                        <div class="quote-card-content">
+                                            <div class="quote-icon" aria-hidden="true">
+                                                <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                                                    <path d="M14.017 21v-7.391c0-5.704 3.731-9.57 8.983-10.609l.995 2.151c-2.432.917-3.995 3.638-3.995 5.849h4v10h-9.983zm-14.017 0v-7.391c0-5.704 3.748-9.57 9-10.609l.996 2.151c-2.433.917-3.996 3.638-3.996 5.849h3.983v10h-9.983z"/>
+                                                </svg>
+                                            </div>
+                                            <blockquote id="achievement-quote-text" class="quote-text">
+                                                “Stop planning. Start executing.”
+                                            </blockquote>
+                                            <div id="achievement-limit-notice" class="achievement-limit-notice" style="display: none;" role="status">Today's two video starts have been used.</div>
+                                            <button type="button" id="btn-achievement-play" class="btn-achievement-play" style="display: none;" aria-label="Play Achievement Video">
+                                                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
+                                                    <polygon points="5 3 19 12 5 21 5 3"/>
+                                                </svg>
+                                                <span id="btn-achievement-play-label">Play Video</span>
+                                            </button>
+                                        </div>
+                                    </div>
+
+                                    <!-- Achievement Video Player Wrapper -->
+                                    <div id="achievement-video-wrap" class="achievement-video-wrap" style="display: none;" role="region" aria-label="Achievement Video Player">
+                                        <video id="achievement-video" class="achievement-video" autoplay muted playsinline loop preload="auto">
+                                            Your browser does not support HTML5 video.
+                                        </video>
+                                        <div id="video-autoplay-fallback" class="video-autoplay-fallback" style="display: none;">
+                                            <button type="button" id="btn-video-fallback-play" class="btn-video-fallback-play" aria-label="Start Video Playback">
+                                                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                                                    <polygon points="5 3 19 12 5 21 5 3"/>
+                                                </svg>
+                                                <span>Click to Play Video</span>
+                                            </button>
+                                        </div>
+                                    </div>
+                                </div>
+
                                 <div class="achievement-body">
                                     <h3 id="achievement-title" class="achievement-title">Innaiku plan pannala machi 😎</h3>
                                     <p id="achievement-sub" class="achievement-sub">No tasks scheduled for today. Add a mission to start your daily mass!</p>

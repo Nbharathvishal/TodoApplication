@@ -319,4 +319,180 @@ assert.strictEqual(achToday.status, "status-kola-mass");
 assert.strictEqual(achToday.title, "SAAREY KOLA MASS UH 🔥");
 console.log("✓ Test 9 Passed: Tamil Achievement Integration with Recurring Occurrences");
 
+// -------------------------------------------------------------
+// Dynamic Time-Based & Task-Driven Achievement Video Tests
+// -------------------------------------------------------------
+const ACHIEVEMENT_VIDEO_MAP = {
+    CHOPPALANGI: "assets/videos/Choppalangi.mp4",
+    PARTIAL: "assets/videos/Romba Kastam bro.mp4",
+    KOLA_MASS: "assets/videos/kola mass uh.mp4"
+};
+
+function getDailyAchievementCalculation(todayTasks) {
+    const total = (todayTasks || []).length;
+    const completed = (todayTasks || []).filter(t => Boolean(t.completed)).length;
+    const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
+
+    let stateKey = "EMPTY";
+    if (total === 0) {
+        stateKey = "EMPTY";
+    } else if (completed === total) {
+        stateKey = "KOLA_MASS";
+    } else if (completed > 0) {
+        stateKey = "PARTIAL";
+    } else {
+        stateKey = "CHOPPALANGI";
+    }
+
+    return {
+        total,
+        completed,
+        pct,
+        stateKey,
+        videoSrc: ACHIEVEMENT_VIDEO_MAP[stateKey] || null
+    };
+}
+
+function isAtOrAfter4PM(date) {
+    return (date || new Date()).getHours() >= 16;
+}
+
+// 10. Test Video Mapping and State Determination
+const tasksZero = [
+    { id: 1, title: "Task 1", completed: false, dueDate: "2026-10-28" },
+    { id: 2, title: "Task 2", completed: false, dueDate: "2026-10-28" }
+];
+const calcZero = getDailyAchievementCalculation(tasksZero);
+assert.strictEqual(calcZero.stateKey, "CHOPPALANGI");
+assert.strictEqual(calcZero.videoSrc, "assets/videos/Choppalangi.mp4");
+
+const tasksPartial = [
+    { id: 1, title: "Task 1", completed: true, dueDate: "2026-10-28" },
+    { id: 2, title: "Task 2", completed: false, dueDate: "2026-10-28" }
+];
+const calcPartial = getDailyAchievementCalculation(tasksPartial);
+assert.strictEqual(calcPartial.stateKey, "PARTIAL");
+assert.strictEqual(calcPartial.videoSrc, "assets/videos/Romba Kastam bro.mp4");
+
+const tasksFull = [
+    { id: 1, title: "Task 1", completed: true, dueDate: "2026-10-28" },
+    { id: 2, title: "Task 2", completed: true, dueDate: "2026-10-28" }
+];
+const calcFull = getDailyAchievementCalculation(tasksFull);
+assert.strictEqual(calcFull.stateKey, "KOLA_MASS");
+assert.strictEqual(calcFull.videoSrc, "assets/videos/kola mass uh.mp4");
+
+const calcEmpty = getDailyAchievementCalculation([]);
+assert.strictEqual(calcEmpty.stateKey, "EMPTY");
+assert.strictEqual(calcEmpty.videoSrc, null);
+console.log("✓ Test 10 Passed: Video Mapping & State Determination for All 4 States");
+
+// 11. Test Time Boundary (Before 4:00 PM vs At/After 4:00 PM)
+const morningTime = new Date(2026, 9, 28, 10, 30, 0); // 10:30 AM
+const afternoonTime = new Date(2026, 9, 28, 15, 59, 59); // 3:59:59 PM
+const fourPmTime = new Date(2026, 9, 28, 16, 0, 0); // 4:00 PM
+const eveningTime = new Date(2026, 9, 28, 20, 30, 0); // 8:30 PM
+
+assert.strictEqual(isAtOrAfter4PM(morningTime), false, "10:30 AM should be before 4:00 PM");
+assert.strictEqual(isAtOrAfter4PM(afternoonTime), false, "3:59 PM should be before 4:00 PM");
+assert.strictEqual(isAtOrAfter4PM(fourPmTime), true, "4:00 PM should be at or after 4:00 PM");
+assert.strictEqual(isAtOrAfter4PM(eveningTime), true, "8:30 PM should be at or after 4:00 PM");
+console.log("✓ Test 11 Passed: 4:00 PM Time Boundary Condition");
+
+// 12. Test Daily Playback Limit (Max 2 Plays, Persistence, Date Reset)
+let testStorage = {};
+const mockStorageEngine = {
+    getItem: (k) => testStorage[k] || null,
+    setItem: (k, v) => { testStorage[k] = String(v); },
+    clear: () => { testStorage = {}; }
+};
+
+function testGetPlaybackRecord(todayStr) {
+    const raw = mockStorageEngine.getItem("taskverse_daily_achievement_playback");
+    if (raw) {
+        const data = JSON.parse(raw);
+        if (data && data.date === todayStr && typeof data.count === "number") {
+            return data;
+        }
+    }
+    const fresh = { date: todayStr, count: 0 };
+    mockStorageEngine.setItem("taskverse_daily_achievement_playback", JSON.stringify(fresh));
+    return fresh;
+}
+
+function testIncrementPlayback(todayStr) {
+    const r = testGetPlaybackRecord(todayStr);
+    r.count += 1;
+    mockStorageEngine.setItem("taskverse_daily_achievement_playback", JSON.stringify(r));
+    return r;
+}
+
+// Start of today: 0 plays
+let rec = testGetPlaybackRecord("2026-10-28");
+assert.strictEqual(rec.count, 0);
+assert.strictEqual(rec.count < 2, true, "Should allow first play");
+
+// Play 1 starts
+rec = testIncrementPlayback("2026-10-28");
+assert.strictEqual(rec.count, 1);
+assert.strictEqual(rec.count < 2, true, "Should allow second play");
+
+// Play 2 starts
+rec = testIncrementPlayback("2026-10-28");
+assert.strictEqual(rec.count, 2);
+assert.strictEqual(rec.count < 2, false, "Should block third play (limit reached)");
+
+// Attempt 3rd play: blocked by limit
+assert.strictEqual(rec.count >= 2, true, "Playback limit enforced");
+
+// Simulate page refresh on same day: count is persisted!
+const reloadedRec = testGetPlaybackRecord("2026-10-28");
+assert.strictEqual(reloadedRec.count, 2, "Daily limit must persist across page reloads");
+
+// Simulate date rollover to next day (2026-10-29)
+const nextDayRec = testGetPlaybackRecord("2026-10-29");
+assert.strictEqual(nextDayRec.count, 0, "Daily limit must reset to 0 on new calendar day");
+console.log("✓ Test 12 Passed: Daily 2-Play Limit, Persistence & Calendar Reset");
+
+// 13. Test Checkbox Toggle & State Change Rules
+let lastState = "CHOPPALANGI";
+// Toggle 1: 0% -> 50% (State changed: CHOPPALANGI -> PARTIAL)
+let currentCalc = getDailyAchievementCalculation(tasksPartial);
+let shouldPlay = currentCalc.stateKey !== lastState && currentCalc.stateKey !== "EMPTY";
+assert.strictEqual(shouldPlay, true, "Should trigger video when state changes");
+lastState = currentCalc.stateKey;
+
+// Toggle 2: User completes another task in a 3-task list, but state remains PARTIAL (e.g. 33% -> 66%)
+const tasksPartial2 = [
+    { id: 1, title: "T1", completed: true, dueDate: "2026-10-28" },
+    { id: 2, title: "T2", completed: true, dueDate: "2026-10-28" },
+    { id: 3, title: "T3", completed: false, dueDate: "2026-10-28" }
+];
+let partialCalc2 = getDailyAchievementCalculation(tasksPartial2);
+assert.strictEqual(partialCalc2.stateKey, "PARTIAL");
+let shouldReplay = partialCalc2.stateKey !== lastState && partialCalc2.stateKey !== "EMPTY";
+assert.strictEqual(shouldReplay, false, "Must NOT replay video unnecessarily if achievement state remains PARTIAL");
+
+// Toggle 3: User completes remaining task (PARTIAL -> KOLA_MASS)
+const tasksAllDone = [
+    { id: 1, title: "T1", completed: true, dueDate: "2026-10-28" },
+    { id: 2, title: "T2", completed: true, dueDate: "2026-10-28" },
+    { id: 3, title: "T3", completed: true, dueDate: "2026-10-28" }
+];
+let fullCalc = getDailyAchievementCalculation(tasksAllDone);
+assert.strictEqual(fullCalc.stateKey, "KOLA_MASS");
+let shouldPlayFull = fullCalc.stateKey !== lastState && fullCalc.stateKey !== "EMPTY";
+assert.strictEqual(shouldPlayFull, true, "Must play Kola Mass video when state changes to 100%");
+console.log("✓ Test 13 Passed: Checkbox Update State Change & Duplicate Prevention Rules");
+
+// 14. Test Unrelated Task Isolation (Future/Past tasks do not affect today's achievements)
+const futureTask = { id: 99, title: "Future Mission", completed: true, dueDate: "2026-10-29" };
+const allTasksWithFuture = [...tasksZero, futureTask];
+const todayOnlyTasks = allTasksWithFuture.filter(t => t.dueDate === "2026-10-28");
+const calcTodayIsolated = getDailyAchievementCalculation(todayOnlyTasks);
+assert.strictEqual(calcTodayIsolated.total, 2);
+assert.strictEqual(calcTodayIsolated.completed, 0);
+assert.strictEqual(calcTodayIsolated.stateKey, "CHOPPALANGI");
+console.log("✓ Test 14 Passed: Task Eligibility Isolation (Future/Past tasks ignored)");
+
 console.log("\nALL RECURRING TASKS & TASKVERSE TESTS PASSED PERFECTLY! 🚀");

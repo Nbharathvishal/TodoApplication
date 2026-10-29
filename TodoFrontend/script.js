@@ -48,6 +48,15 @@ function handleFetchError(error, contextMsg = "Request failed") {
     const current = getServerUrl();
     const isLocalTarget = current.includes("localhost") || current.includes("127.0.0.1");
 
+    if (error && error.message && (error.message.includes("403") || error.message.includes("401") || error.message.includes("Session expired"))) {
+        localStorage.removeItem("token");
+        showToast("Session expired or access denied (HTTP 403). Please sign in again.", "error");
+        setTimeout(() => {
+            window.location.href = "login.html";
+        }, 1200);
+        return;
+    }
+
     if (error.message === "Failed to fetch" || error.name === "TypeError") {
         if (isLocalTarget) {
             showToast(
@@ -79,7 +88,8 @@ const state = {
     customCategories: ["Work", "Personal", "Learning", "Shopping", "Other"],
     soundEnabled: false,
     hasCelebratedKolaMassToday: false,
-    confirmActionCallback: null
+    confirmActionCallback: null,
+    isSubmittingTask: false
 };
 
 // -------------------------------------------------------------
@@ -87,6 +97,20 @@ const state = {
 // -------------------------------------------------------------
 function getToken() {
     return localStorage.getItem("token");
+}
+
+function isTokenExpired(token) {
+    if (!token) return true;
+    try {
+        const parts = token.split(".");
+        if (parts.length !== 3) return true;
+        const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
+        if (!payload.exp) return false;
+        // Expired if current time is past exp (with a 5-second buffer)
+        return Date.now() >= (payload.exp * 1000) - 5000;
+    } catch (e) {
+        return true;
+    }
 }
 
 function getLoggedInEmail() {
@@ -273,10 +297,12 @@ function parseTodoMetadata(rawTodo) {
             if (parsed.dueDate) dueDate = parsed.dueDate;
             if (parsed.category) category = parsed.category;
             if (parsed.recurrence) recurrence = { ...recurrence, ...parsed.recurrence };
-            cleanDescription = desc.replace(metaRegex, "").trim();
+            cleanDescription = desc.replace(/<!--taskverse:[\s\S]*?-->/g, "").trim();
         } catch (e) {
             console.warn("Failed to parse taskverse metadata:", e);
         }
+    } else {
+        cleanDescription = desc.replace(/<!--taskverse:[\s\S]*?-->/g, "").trim();
     }
 
     // If cleanDescription was automatically defaulted to title, treat it as empty for UI
@@ -303,12 +329,14 @@ function serializeTodoForBackend(todoInput) {
     };
 
     const metaTag = `<!--taskverse:${JSON.stringify(meta)}-->`;
-    let finalDescription = (todoInput.description || "").trim();
+    const inputDesc = (todoInput.cleanDescription !== undefined ? todoInput.cleanDescription : (todoInput.description || "")).trim();
+    const strippedDesc = inputDesc.replace(/<!--taskverse:[\s\S]*?-->/g, "").trim();
 
-    if (!finalDescription) {
+    let finalDescription = "";
+    if (!strippedDesc || strippedDesc === todoInput.title) {
         finalDescription = `${todoInput.title}\n${metaTag}`;
     } else {
-        finalDescription = `${finalDescription}\n${metaTag}`;
+        finalDescription = `${strippedDesc}\n${metaTag}`;
     }
 
     return {
@@ -485,6 +513,13 @@ async function updateRecurringSeries(seriesId, updatedFields) {
         loadTodos();
     } catch (err) {
         handleFetchError(err, "Failed to update entire series");
+    } finally {
+        state.isSubmittingTask = false;
+        const saveBtn = document.getElementById("modal-task-save-btn");
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = "Save Mission";
+        }
     }
 }
 
@@ -606,7 +641,14 @@ function closeSeriesModal() {
 function deleteSingleOccurrence(id) {
     closeSeriesModal();
     const currentToken = getToken();
-    if (!currentToken) return;
+    if (!currentToken || isTokenExpired(currentToken)) {
+        localStorage.removeItem("token");
+        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
+        setTimeout(() => {
+            window.location.href = "login.html";
+        }, 800);
+        return;
+    }
 
     fetch(`${getServerUrl()}/api/todo/${id}`, {
         method: "DELETE",
@@ -614,8 +656,19 @@ function deleteSingleOccurrence(id) {
             Authorization: `Bearer ${currentToken}`
         }
     })
-    .then(response => {
-        if (!response.ok) throw new Error("Failed to delete occurrence");
+    .then(async response => {
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                localStorage.removeItem("token");
+                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                setTimeout(() => {
+                    window.location.href = "login.html";
+                }, 1000);
+                throw new Error("Session expired or access denied (HTTP 403)");
+            }
+            const errorText = await response.text();
+            throw new Error(errorText || `Failed to delete occurrence (HTTP ${response.status})`);
+        }
         showToast("Single occurrence deleted.", "info");
         loadTodos();
     })
@@ -681,15 +734,31 @@ function loadTodos() {
     });
 }
 
-async function addTodo(taskData) {
+async function addTodo(taskData = {}) {
     const currentToken = getToken();
-    if (!currentToken) {
-        window.location.href = "login.html";
+    if (!currentToken || isTokenExpired(currentToken)) {
+        state.isSubmittingTask = false;
+        const saveBtn = document.getElementById("modal-task-save-btn");
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = "Save Mission";
+        }
+        localStorage.removeItem("token");
+        showToast("Session expired or missing. Please sign in again.", "error");
+        setTimeout(() => {
+            window.location.href = "login.html";
+        }, 800);
         return;
     }
 
     const title = taskData.title || document.getElementById("modal-task-title")?.value.trim();
     if (!title) {
+        state.isSubmittingTask = false;
+        const saveBtn = document.getElementById("modal-task-save-btn");
+        if (saveBtn) {
+            saveBtn.disabled = false;
+            saveBtn.textContent = "Save Mission";
+        }
         showToast("Task title is required", "error");
         return;
     }
@@ -707,100 +776,70 @@ async function addTodo(taskData) {
         endCount: Number(document.getElementById("modal-repeat-end-count")?.value) || 10
     };
 
+    const isRecurring = recurrence && recurrence.frequency && recurrence.frequency !== "none";
+    const seriesId = isRecurring
+        ? (recurrence.seriesId || ("series_" + Date.now() + "_" + Math.floor(Math.random() * 1000)))
+        : null;
+    const taskRecurrence = isRecurring
+        ? {
+            ...recurrence,
+            seriesId,
+            isPaused: false
+        }
+        : { frequency: "none" };
+
     const saveBtn = document.getElementById("modal-task-save-btn");
     if (saveBtn) {
         saveBtn.disabled = true;
-        saveBtn.textContent = "Scheduling...";
+        saveBtn.textContent = isRecurring ? "Scheduling..." : "Saving...";
     }
+    state.isSubmittingTask = true;
 
     try {
-        if (recurrence.frequency !== "none") {
-            const seriesId = recurrence.seriesId || ("series_" + Date.now() + "_" + Math.floor(Math.random() * 1000));
-            const seriesRecurrence = {
-                ...recurrence,
-                seriesId,
-                isPaused: false
-            };
+        const payload = serializeTodoForBackend({
+            title,
+            description: desc,
+            dueDate,
+            priority,
+            category,
+            completed: false,
+            recurrence: taskRecurrence
+        });
 
-            const dates = calculateSeriesDates(dueDate, seriesRecurrence);
+        // Exactly one create request per click
+        const res = await fetch(`${getServerUrl()}/api/todo/create`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                Authorization: `Bearer ${currentToken}`
+            },
+            body: JSON.stringify(payload)
+        });
 
-            // Duplicate prevention: filter out dates that already exist in state.todos for this seriesId
-            const existingDates = new Set(
-                state.todos
-                    .filter(t => t.recurrence && t.recurrence.seriesId === seriesId)
-                    .map(t => t.dueDate)
-            );
-
-            const uniqueDates = [];
-            dates.forEach(d => {
-                if (!existingDates.has(d) && !uniqueDates.includes(d)) {
-                    uniqueDates.push(d);
-                }
-            });
-
-            if (uniqueDates.length === 0) {
-                showToast("All occurrences in this series are already scheduled.", "info");
-                closeTaskModal();
+        if (!res.ok) {
+            if (res.status === 401 || res.status === 403) {
+                localStorage.removeItem("token");
+                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                setTimeout(() => {
+                    window.location.href = "login.html";
+                }, 1000);
                 return;
             }
-
-            for (let i = 0; i < uniqueDates.length; i++) {
-                const dateStr = uniqueDates[i];
-                const occPayload = serializeTodoForBackend({
-                    title,
-                    description: desc,
-                    dueDate: dateStr,
-                    priority,
-                    category,
-                    completed: false,
-                    recurrence: {
-                        ...seriesRecurrence,
-                        isOccurrence: i > 0
-                    }
-                });
-
-                await fetch(`${getServerUrl()}/api/todo/create`, {
-                    method: "POST",
-                    headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${currentToken}`
-                    },
-                    body: JSON.stringify(occPayload)
-                });
-            }
-
-            closeTaskModal();
-            showToast(`Recurring mission created with ${uniqueDates.length} occurrences! 🔁`, "success");
-            loadTodos();
-        } else {
-            // One-time task
-            const payload = serializeTodoForBackend({
-                title,
-                description: desc,
-                dueDate,
-                priority,
-                category,
-                completed: false,
-                recurrence: { frequency: "none" }
-            });
-
-            const res = await fetch(`${getServerUrl()}/api/todo/create`, {
-                method: "POST",
-                headers: {
-                    "Content-Type": "application/json",
-                    Authorization: `Bearer ${currentToken}`
-                },
-                body: JSON.stringify(payload)
-            });
-
-            if (!res.ok) throw new Error("Failed to create task");
-            closeTaskModal();
-            showToast("Mission created successfully!", "success");
-            loadTodos();
+            const errorMsg = await res.text();
+            throw new Error(errorMsg || `Failed to create mission (HTTP ${res.status})`);
         }
+
+        const createdTask = await res.json();
+        closeTaskModal();
+        const successMsg = isRecurring
+            ? `Recurring mission "${createdTask.title || title}" scheduled successfully! 🔁`
+            : "Mission created successfully!";
+        showToast(successMsg, "success");
+        loadTodos();
     } catch (error) {
         handleFetchError(error, "Failed to create mission");
     } finally {
+        state.isSubmittingTask = false;
         if (saveBtn) {
             saveBtn.disabled = false;
             saveBtn.textContent = "Save Mission";
@@ -808,17 +847,22 @@ async function addTodo(taskData) {
     }
 }
 
-function updateTodoStatus(todo) {
+function updateTodoStatus(todo, onRevert) {
     const currentToken = getToken();
-    if (!currentToken) {
-        window.location.href = "login.html";
+    if (!currentToken || isTokenExpired(currentToken)) {
+        if (typeof onRevert === "function") onRevert();
+        localStorage.removeItem("token");
+        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
+        setTimeout(() => {
+            window.location.href = "login.html";
+        }, 800);
         return;
     }
 
     const payload = serializeTodoForBackend({
         id: todo.id,
         title: todo.title,
-        description: todo.cleanDescription || todo.description,
+        cleanDescription: todo.cleanDescription !== undefined ? todo.cleanDescription : "",
         dueDate: todo.dueDate,
         priority: todo.priority,
         category: todo.category,
@@ -833,8 +877,19 @@ function updateTodoStatus(todo) {
         },
         body: JSON.stringify(payload)
     })
-    .then(response => {
-        if (!response.ok) throw new Error("Failed to update task");
+    .then(async response => {
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                localStorage.removeItem("token");
+                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                setTimeout(() => {
+                    window.location.href = "login.html";
+                }, 1000);
+                throw new Error("Session expired or access denied (HTTP 403)");
+            }
+            const errorText = await response.text();
+            throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
+        }
         return response.json();
     })
     .then(updated => {
@@ -843,14 +898,19 @@ function updateTodoStatus(todo) {
         loadTodos();
     })
     .catch(error => {
+        if (typeof onRevert === "function") onRevert();
         handleFetchError(error, "Failed to update task status");
     });
 }
 
 function updateTodoDetails(taskData) {
     const currentToken = getToken();
-    if (!currentToken) {
-        window.location.href = "login.html";
+    if (!currentToken || isTokenExpired(currentToken)) {
+        localStorage.removeItem("token");
+        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
+        setTimeout(() => {
+            window.location.href = "login.html";
+        }, 800);
         return;
     }
 
@@ -861,6 +921,7 @@ function updateTodoDetails(taskData) {
         saveBtn.disabled = true;
         saveBtn.textContent = "Updating...";
     }
+    state.isSubmittingTask = true;
 
     fetch(`${getServerUrl()}/api/todo`, {
         method: "PUT",
@@ -870,8 +931,19 @@ function updateTodoDetails(taskData) {
         },
         body: JSON.stringify(payload)
     })
-    .then(response => {
-        if (!response.ok) throw new Error("Failed to update task");
+    .then(async response => {
+        if (!response.ok) {
+            if (response.status === 401 || response.status === 403) {
+                localStorage.removeItem("token");
+                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                setTimeout(() => {
+                    window.location.href = "login.html";
+                }, 1000);
+                throw new Error("Session expired or access denied (HTTP 403)");
+            }
+            const errorText = await response.text();
+            throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
+        }
         return response.json();
     })
     .then(updated => {
@@ -883,6 +955,7 @@ function updateTodoDetails(taskData) {
         handleFetchError(error, "Failed to update task details");
     })
     .finally(() => {
+        state.isSubmittingTask = false;
         if (saveBtn) {
             saveBtn.disabled = false;
             saveBtn.textContent = "Save Mission";
@@ -893,8 +966,12 @@ function updateTodoDetails(taskData) {
 function deleteTodo(id) {
     showConfirmModal("Are you sure you want to delete this mission? This cannot be undone.", () => {
         const currentToken = getToken();
-        if (!currentToken) {
-            window.location.href = "login.html";
+        if (!currentToken || isTokenExpired(currentToken)) {
+            localStorage.removeItem("token");
+            showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
+            setTimeout(() => {
+                window.location.href = "login.html";
+            }, 800);
             return;
         }
 
@@ -904,8 +981,19 @@ function deleteTodo(id) {
                 Authorization: `Bearer ${currentToken}`
             }
         })
-        .then(response => {
-            if (!response.ok) throw new Error("Failed to delete mission");
+        .then(async response => {
+            if (!response.ok) {
+                if (response.status === 401 || response.status === 403) {
+                    localStorage.removeItem("token");
+                    showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                    setTimeout(() => {
+                        window.location.href = "login.html";
+                    }, 1000);
+                    throw new Error("Session expired or access denied (HTTP 403)");
+                }
+                const errorText = await response.text();
+                throw new Error(errorText || `Failed to delete mission (HTTP ${response.status})`);
+            }
             showToast("Mission deleted.", "info");
             loadTodos();
         })
@@ -1002,11 +1090,17 @@ function createTodoCard(todo) {
     nativeCheckbox.checked = todo.completed;
 
     nativeCheckbox.addEventListener("change", function () {
+        const wasChecked = !nativeCheckbox.checked;
         const updatedTodo = {
             ...todo,
             completed: nativeCheckbox.checked
         };
-        updateTodoStatus(updatedTodo);
+        onTaskCheckboxUpdated(updatedTodo);
+        updateTodoStatus(updatedTodo, () => {
+            nativeCheckbox.checked = wasChecked;
+            const reverted = { ...todo, completed: wasChecked };
+            onTaskCheckboxUpdated(reverted);
+        });
     });
 
     const customCheckbox = document.createElement("div");
@@ -1592,15 +1686,420 @@ function openCreateTaskModalForSelectedDate() {
 }
 
 // -------------------------------------------------------------
-// SIGNATURE FEATURE: Funny Tamil Cinema Achievement System
+// SIGNATURE FEATURE: Dynamic Time-Based & Task-Driven Achievement System
 // -------------------------------------------------------------
+const ACHIEVEMENT_VIDEO_MAP = {
+    CHOPPALANGI: "assets/videos/Choppalangi.mp4",
+    PARTIAL: "assets/videos/Romba Kastam bro.mp4",
+    KOLA_MASS: "assets/videos/kola mass uh.mp4"
+};
+
+const ACHIEVEMENT_STORAGE_KEY = "taskverse_daily_achievement_playback";
+const MAX_DAILY_VIDEO_STARTS = 2;
+
+const achievementVideoManager = {
+    isInitialized: false,
+    lastAchievementState: null,
+    isPlaying: false,
+    currentVideoSrc: null,
+    hasCountedCurrentPlayback: false,
+    pendingPlayState: null,
+    lastError: "None",
+    listenersBound: false
+};
+
+function updateAchievementDebug() {
+    const video = document.getElementById("achievement-video");
+    const todayTasks = state.todos.filter(t => t.dueDate === getTodayDateString());
+    const calc = getDailyAchievementCalculation(todayTasks);
+    const record = getDailyPlaybackRecord();
+    const values = {
+        "achievement-debug-time": getAchievementCurrentTime().toLocaleString(),
+        "achievement-debug-state": calc.stateKey,
+        "achievement-debug-path": achievementVideoManager.currentVideoSrc || calc.videoSrc || "None",
+        "achievement-debug-ready": video ? `${video.readyState} (${["HAVE_NOTHING", "HAVE_METADATA", "HAVE_CURRENT_DATA", "HAVE_FUTURE_DATA", "HAVE_ENOUGH_DATA"][video.readyState] || "unknown"})` : "No video element",
+        "achievement-debug-playback": video ? (video.error ? "error" : video.paused ? "paused" : "playing") : "No video element",
+        "achievement-debug-count": `${record.count} starts today`,
+        "achievement-debug-error": achievementVideoManager.lastError
+    };
+    Object.entries(values).forEach(([id, value]) => {
+        const node = document.getElementById(id);
+        if (node) node.textContent = String(value);
+    });
+}
+
+function bindAchievementVideoEvents(video) {
+    if (achievementVideoManager.listenersBound) return;
+    achievementVideoManager.listenersBound = true;
+    console.info("[Achievement video] Video element created", video);
+    ["loadedmetadata", "canplay", "play", "playing", "ended", "error"].forEach(eventName => {
+        video.addEventListener(eventName, () => {
+            console.info(`[Achievement video] ${eventName}`, {
+                src: video.currentSrc || video.src,
+                readyState: video.readyState,
+                paused: video.paused,
+                error: video.error ? `${video.error.code}: ${video.error.message || "media error"}` : null
+            });
+            if (eventName === "error") {
+                const mediaError = video.error;
+                achievementVideoManager.lastError = mediaError
+                    ? `MediaError ${mediaError.code}: ${mediaError.message || "The browser could not decode or load this media."}`
+                    : "Video resource error";
+                achievementVideoManager.isPlaying = false;
+                showQuoteCardWithPlayOption(achievementVideoManager.lastAchievementState, achievementVideoManager.currentVideoSrc);
+            }
+            if (eventName === "ended") {
+                if (achievementVideoManager.isPlaying) {
+                    console.warn("[Achievement video] Loop ended unexpectedly; restarting active video");
+                    restartActiveAchievementVideo(video);
+                } else {
+                    achievementVideoManager.isPlaying = false;
+                    showQuoteCard();
+                }
+            }
+            if (eventName === "playing" && !achievementVideoManager.hasCountedCurrentPlayback) {
+                achievementVideoManager.hasCountedCurrentPlayback = true;
+                incrementDailyPlaybackCount();
+            }
+            if (eventName === "playing") {
+                achievementVideoManager.isPlaying = true;
+                const fallback = document.getElementById("video-autoplay-fallback");
+                if (fallback) fallback.style.display = "none";
+            }
+            updateAchievementDebug();
+        });
+    });
+    ["loadedmetadata", "canplay", "play", "playing", "ended", "error"].forEach(eventName => {
+        video.addEventListener(eventName, () => {
+            if (eventName === "ended" || eventName === "error") return;
+            updateAchievementDebug();
+        });
+    });
+}
+
+function getAchievementCurrentTime() {
+    if (typeof window !== "undefined" && window.__achievementTimeOverride instanceof Date) {
+        return window.__achievementTimeOverride;
+    }
+    return new Date();
+}
+
+function isAtOrAfter4PM(date) {
+    const d = date || getAchievementCurrentTime();
+    return d.getHours() >= 16;
+}
+
+function getDailyAchievementCalculation(todayTasks) {
+    const total = (todayTasks || []).length;
+    const completed = (todayTasks || []).filter(t => Boolean(t.completed)).length;
+    const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
+
+    let stateKey = "EMPTY";
+    if (total === 0) {
+        stateKey = "EMPTY";
+    } else if (completed === total) {
+        stateKey = "KOLA_MASS";
+    } else if (completed > 0) {
+        stateKey = "PARTIAL";
+    } else {
+        stateKey = "CHOPPALANGI";
+    }
+
+    return {
+        total,
+        completed,
+        pct,
+        stateKey,
+        videoSrc: ACHIEVEMENT_VIDEO_MAP[stateKey] || null
+    };
+}
+
+function getDailyPlaybackRecord() {
+    const todayStr = getTodayDateString();
+    try {
+        if (typeof localStorage !== "undefined") {
+            const raw = localStorage.getItem(ACHIEVEMENT_STORAGE_KEY);
+            if (raw) {
+                const data = JSON.parse(raw);
+                if (data && data.date === todayStr && typeof data.count === "number") {
+                    return data;
+                }
+            }
+        }
+    } catch (e) {
+        console.warn("Error reading achievement playback limit:", e);
+    }
+    const fresh = { date: todayStr, count: 0 };
+    saveDailyPlaybackRecord(fresh);
+    return fresh;
+}
+
+function saveDailyPlaybackRecord(record) {
+    try {
+        if (typeof localStorage !== "undefined") {
+            localStorage.setItem(ACHIEVEMENT_STORAGE_KEY, JSON.stringify(record));
+        }
+    } catch (e) {
+        console.warn("Error saving achievement playback limit:", e);
+    }
+}
+
+function incrementDailyPlaybackCount() {
+    const record = getDailyPlaybackRecord();
+    record.count += 1;
+    saveDailyPlaybackRecord(record);
+    updatePlaybackLimitUI();
+    updateAchievementDebug();
+}
+
+function hasReachedDailyPlaybackLimit() {
+    return false;
+}
+
+function updatePlaybackLimitUI() {
+    const notice = document.getElementById("achievement-limit-notice");
+    const playButton = document.getElementById("btn-achievement-play");
+    if (notice) notice.style.display = "none";
+    if (playButton) playButton.style.display = "none";
+}
+
+function showQuoteCard() {
+    const videoWrap = document.getElementById("achievement-video-wrap");
+    const quoteCard = document.getElementById("achievement-quote-card");
+    const video = document.getElementById("achievement-video");
+    const playBtn = document.getElementById("btn-achievement-play");
+    const fallbackOverlay = document.getElementById("video-autoplay-fallback");
+
+    if (video) {
+        try {
+            video.pause();
+        } catch (e) { console.error("[Achievement video] pause failed", e); }
+    }
+
+    if (fallbackOverlay) fallbackOverlay.style.display = "none";
+    if (videoWrap) videoWrap.style.display = "none";
+    if (quoteCard) quoteCard.style.display = "flex";
+    if (playBtn) playBtn.style.display = "none";
+
+    achievementVideoManager.isPlaying = false;
+    updatePlaybackLimitUI();
+    updateAchievementDebug();
+}
+
+function showQuoteCardWithPlayOption(stateKey, videoSrc) {
+    showQuoteCard();
+}
+
+function playAchievementVideo(stateKey, videoSrc) {
+    if (!videoSrc) {
+        showQuoteCard();
+        return;
+    }
+
+    const videoWrap = document.getElementById("achievement-video-wrap");
+    const quoteCard = document.getElementById("achievement-quote-card");
+    const video = document.getElementById("achievement-video");
+    const fallbackOverlay = document.getElementById("video-autoplay-fallback");
+
+    if (!video || !videoWrap || !quoteCard) return;
+
+    bindAchievementVideoEvents(video);
+
+    achievementVideoManager.hasCountedCurrentPlayback = false;
+    achievementVideoManager.currentVideoSrc = videoSrc;
+    achievementVideoManager.lastAchievementState = stateKey;
+    achievementVideoManager.pendingPlayState = { stateKey, videoSrc };
+    achievementVideoManager.isPlaying = true;
+    achievementVideoManager.lastError = "None";
+
+    // Replace the quote card with the video wrap
+    quoteCard.style.display = "none";
+    videoWrap.style.display = "flex";
+    if (fallbackOverlay) fallbackOverlay.style.display = "none";
+
+    // Configure video element for GIF-like autoplay with continuous motion
+    video.autoplay = true;
+    video.muted = true;
+    video.defaultMuted = true;
+    video.loop = true;
+    video.controls = false;
+    video.playsInline = true;
+    video.setAttribute("muted", "");
+    video.setAttribute("playsinline", "");
+    video.setAttribute("loop", "");
+    video.setAttribute("autoplay", "");
+
+    const encodedSrc = encodeURI(videoSrc);
+    const currentSrcAttr = video.getAttribute("src") || "";
+    if (currentSrcAttr !== encodedSrc && currentSrcAttr !== videoSrc) {
+        video.src = encodedSrc;
+        console.info("[Achievement video] Source assigned", video.src);
+        video.load();
+    }
+
+    updateAchievementDebug();
+
+    // Trigger video playback
+    attemptAchievementPlayback(video, stateKey, videoSrc);
+}
+
+function attemptAchievementPlayback(video, stateKey, videoSrc) {
+    achievementVideoManager.currentVideoSrc = videoSrc;
+    achievementVideoManager.lastAchievementState = stateKey;
+    achievementVideoManager.pendingPlayState = { stateKey, videoSrc };
+    achievementVideoManager.isPlaying = true;
+    const fallbackOverlay = document.getElementById("video-autoplay-fallback");
+
+    const doPlay = () => {
+        const promise = video.play();
+        if (promise && typeof promise.then === "function") {
+            promise.then(() => {
+                achievementVideoManager.isPlaying = true;
+                if (fallbackOverlay) fallbackOverlay.style.display = "none";
+                updateAchievementDebug();
+            }).catch(error => {
+                console.warn("[Achievement video] video.play() note:", error.name, error.message);
+                achievementVideoManager.lastError = (error.name || "Error") + ": " + (error.message || String(error));
+                if (error.name === "AbortError") {
+                    const onCanPlay = () => {
+                        video.removeEventListener("canplay", onCanPlay);
+                        if (achievementVideoManager.isPlaying) {
+                            video.play().catch(e => console.warn("Retry play error:", e));
+                        }
+                    };
+                    video.addEventListener("canplay", onCanPlay, { once: true });
+                } else if (error.name === "NotAllowedError") {
+                    if (fallbackOverlay) fallbackOverlay.style.display = "flex";
+                } else {
+                    showQuoteCardWithPlayOption(stateKey, videoSrc);
+                }
+                updateAchievementDebug();
+            });
+        }
+    };
+
+    if (video.readyState >= 2) {
+        doPlay();
+    } else {
+        const onReady = () => {
+            video.removeEventListener("canplay", onReady);
+            video.removeEventListener("loadeddata", onReady);
+            doPlay();
+        };
+        video.addEventListener("canplay", onReady, { once: true });
+        video.addEventListener("loadeddata", onReady, { once: true });
+        doPlay();
+    }
+}
+
+function restartActiveAchievementVideo(video) {
+    if (!achievementVideoManager.isPlaying) {
+        showQuoteCard();
+        return;
+    }
+    // A loop restart is part of the current start and does not consume another.
+    video.currentTime = 0;
+    const promise = video.play();
+    if (promise && typeof promise.catch === "function") {
+        promise.catch(error => {
+            console.warn("[Achievement video] Loop restart note:", error);
+        });
+    }
+}
+
+function handleAchievementVideoSync(calc) {
+    updatePlaybackLimitUI();
+    achievementVideoManager.currentVideoSrc = calc.videoSrc;
+    updateAchievementDebug();
+
+    // Determine target video based on task completion and 4 PM rule:
+    // 1. KOLA_MASS (100% completed): play kola mass uh.mp4
+    // 2. PARTIAL (partially completed): play Romba Kastam bro.mp4
+    // 3. CHOPPALANGI (0 tasks completed):
+    //    - If by 4pm (at/after 4pm): Choppalangi video must play default
+    //    - If before 4pm: show quote card
+    // 4. EMPTY (0 tasks scheduled): show quote card
+
+    let targetVideoSrc = null;
+    let targetState = calc.stateKey;
+
+    if (calc.stateKey === "KOLA_MASS") {
+        targetVideoSrc = calc.videoSrc;
+    } else if (calc.stateKey === "PARTIAL") {
+        targetVideoSrc = calc.videoSrc;
+    } else if (calc.stateKey === "CHOPPALANGI") {
+        if (isAtOrAfter4PM()) {
+            targetVideoSrc = calc.videoSrc;
+        }
+    }
+
+    achievementVideoManager.isInitialized = true;
+    achievementVideoManager.lastAchievementState = calc.stateKey;
+
+    if (targetVideoSrc) {
+        const video = document.getElementById("achievement-video");
+        const encodedSrc = encodeURI(targetVideoSrc);
+        const currentSrcAttr = video ? (video.getAttribute("src") || "") : "";
+        const isSameVideo = (currentSrcAttr === encodedSrc || currentSrcAttr === targetVideoSrc);
+
+        if (!achievementVideoManager.isPlaying || !isSameVideo) {
+            playAchievementVideo(targetState, targetVideoSrc);
+        }
+    } else {
+        showQuoteCard();
+    }
+}
+
+function onTaskCheckboxUpdated(updatedTodo) {
+    const todayStr = getTodayDateString();
+
+    // Optimistically update in memory to recalculate immediately
+    const idx = state.todos.findIndex(t => t.id === updatedTodo.id);
+    if (idx !== -1) {
+        state.todos[idx] = { ...state.todos[idx], completed: updatedTodo.completed };
+    }
+
+    // Update achievement display labels and meter, which triggers handleAchievementVideoSync
+    renderMassMeterAndAchievements();
+}
+
+function setupAchievementEventListeners() {
+    const playBtn = document.getElementById("btn-achievement-play");
+    if (playBtn) {
+        playBtn.addEventListener("click", function () {
+            const todayStr = getTodayDateString();
+            const todayTasks = state.todos.filter(t => t.dueDate === todayStr);
+            const calc = getDailyAchievementCalculation(todayTasks);
+            if (calc.videoSrc) {
+                playAchievementVideo(calc.stateKey, calc.videoSrc);
+            }
+        });
+    }
+
+    const fallbackPlayBtn = document.getElementById("btn-video-fallback-play");
+    if (fallbackPlayBtn) {
+        fallbackPlayBtn.addEventListener("click", function () {
+            const video = document.getElementById("achievement-video");
+            const fallbackOverlay = document.getElementById("video-autoplay-fallback");
+            if (fallbackOverlay) fallbackOverlay.style.display = "none";
+            if (video) {
+                const todayStr = getTodayDateString();
+                const todayTasks = state.todos.filter(t => t.dueDate === todayStr);
+                const calc = getDailyAchievementCalculation(todayTasks);
+                if (calc.videoSrc) {
+                    attemptAchievementPlayback(video, calc.stateKey, calc.videoSrc);
+                }
+            }
+        });
+    }
+}
+
 function renderMassMeterAndAchievements() {
     const todayStr = getTodayDateString();
     const todayTasks = state.todos.filter(t => t.dueDate === todayStr);
 
-    const total = todayTasks.length;
-    const completed = todayTasks.filter(t => t.completed).length;
-    const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
+    const calc = getDailyAchievementCalculation(todayTasks);
+    const { total, completed, pct, stateKey } = calc;
 
     const card = document.getElementById("achievement-card");
     const badge = document.getElementById("achievement-badge");
@@ -1624,7 +2123,7 @@ function renderMassMeterAndAchievements() {
     // Reset styles
     card.classList.remove("status-kola-mass", "status-partial", "status-choppalangi", "status-empty");
 
-    if (total === 0) {
+    if (stateKey === "EMPTY") {
         // Empty State: Neutral, no tasks scheduled
         card.classList.add("status-empty");
         if (icon) icon.textContent = "😎";
@@ -1632,7 +2131,7 @@ function renderMassMeterAndAchievements() {
         title.textContent = "Innaiku plan pannala machi 😎";
         sub.textContent = "No tasks scheduled for today. Add a mission to start your daily mass!";
         fill.style.backgroundColor = "var(--text-muted)";
-    } else if (completed === total) {
+    } else if (stateKey === "KOLA_MASS") {
         // Condition A: 100% completed (SAAREY KOLA MASS UH 🔥)
         card.classList.add("status-kola-mass");
         if (icon) icon.textContent = "🔥";
@@ -1647,7 +2146,7 @@ function renderMassMeterAndAchievements() {
             playAchievementChime();
             state.hasCelebratedKolaMassToday = true;
         }
-    } else if (completed > 0 && completed < total) {
+    } else if (stateKey === "PARTIAL") {
         // Condition B: Partially completed (AH NEE THEDA MATTA ROMBA KASTAM 😂)
         card.classList.add("status-partial");
         if (icon) icon.textContent = "😂";
@@ -1666,6 +2165,9 @@ function renderMassMeterAndAchievements() {
         fill.style.background = "linear-gradient(90deg, #7f1d1d, #A51C18)";
         state.hasCelebratedKolaMassToday = false;
     }
+
+    // Synchronize achievement video & media section
+    handleAchievementVideoSync(calc);
 }
 
 // -------------------------------------------------------------
@@ -1977,12 +2479,16 @@ function requestBrowserNotifications() {
 // Create / Edit Task Modal Controls
 // -------------------------------------------------------------
 function openCreateTaskModal(defaults = {}) {
+    state.isSubmittingTask = false;
     const modal = document.getElementById("task-modal");
     const title = document.getElementById("task-modal-title");
     const saveBtn = document.getElementById("modal-task-save-btn");
 
     if (title) title.textContent = "Create New Mission";
-    if (saveBtn) saveBtn.textContent = "Save Mission";
+    if (saveBtn) {
+        saveBtn.textContent = "Save Mission";
+        saveBtn.disabled = false;
+    }
 
     document.getElementById("modal-task-id").value = "";
     document.getElementById("modal-task-title").value = defaults.title || "";
@@ -2066,6 +2572,12 @@ function openEditTaskModal(todo) {
 }
 
 function closeTaskModal() {
+    state.isSubmittingTask = false;
+    const saveBtn = document.getElementById("modal-task-save-btn");
+    if (saveBtn) {
+        saveBtn.disabled = false;
+        saveBtn.textContent = "Save Mission";
+    }
     const modal = document.getElementById("task-modal");
     if (modal) modal.classList.remove("open");
 }
@@ -2078,6 +2590,9 @@ function selectModalPriority(priority) {
 }
 
 function submitTaskModal() {
+    // Prevent duplicate submissions and concurrent clicks
+    if (state.isSubmittingTask) return;
+
     const id = document.getElementById("modal-task-id").value;
     const title = document.getElementById("modal-task-title").value.trim();
     const desc = document.getElementById("modal-task-desc").value.trim();
@@ -2108,6 +2623,13 @@ function submitTaskModal() {
             err.style.display = "block";
         }
         return;
+    }
+
+    state.isSubmittingTask = true;
+    const saveBtn = document.getElementById("modal-task-save-btn");
+    if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = id ? "Updating..." : (repeatFreq !== "none" ? "Scheduling..." : "Saving...");
     }
 
     if (id) {
@@ -2350,6 +2872,9 @@ function saveUserPreferences() {
 document.addEventListener("DOMContentLoaded", function () {
     // Initialize server selector UI
     updateServerSelectorUI();
+
+    // Initialize achievement event listeners (Play video, close video)
+    setupAchievementEventListeners();
 
     // Check if on dashboard / todos page
     if (document.getElementById("todo-list") || document.getElementById("view-dashboard")) {
