@@ -84,6 +84,9 @@ const state = {
     sortBy: "dueDate",
     calendarMonth: new Date().getMonth(),
     calendarYear: new Date().getFullYear(),
+    habitTrackerMonth: new Date().getMonth(),
+    habitTrackerYear: new Date().getFullYear(),
+    habitViewMode: localStorage.getItem("taskverse_view_mode") || "spreadsheet",
     selectedCalendarDate: getTodayDateString(),
     customCategories: ["Work", "Personal", "Learning", "Shopping", "Other"],
     soundEnabled: false,
@@ -264,7 +267,7 @@ function getRelativeDateStatus(dueDateStr, isCompleted) {
 }
 
 // Encodes/Decodes rich metadata inside Todo description
-// Format: userDescription\n<!--taskverse:{"priority":"High","dueDate":"2026-10-28","category":"Work","recurrence":{...}}-->
+// Format: userDescription\n<!--taskverse:{"priority":"High","dueDate":"2026-10-28","category":"Work","recurrence":{...},"goal":30,"completedDates":[]}-->
 function parseTodoMetadata(rawTodo) {
     const todo = {
         ...rawTodo,
@@ -279,6 +282,8 @@ function parseTodoMetadata(rawTodo) {
     let dueDate = getTodayDateString();
     let category = "Work";
     let cleanDescription = desc;
+    let goal = 30;
+    let completedDates = [];
     let recurrence = {
         frequency: "none",
         customDays: [1, 2, 3, 4, 5],
@@ -297,6 +302,8 @@ function parseTodoMetadata(rawTodo) {
             if (parsed.dueDate) dueDate = parsed.dueDate;
             if (parsed.category) category = parsed.category;
             if (parsed.recurrence) recurrence = { ...recurrence, ...parsed.recurrence };
+            if (parsed.goal !== undefined && parsed.goal !== null) goal = Number(parsed.goal) || 30;
+            if (Array.isArray(parsed.completedDates)) completedDates = parsed.completedDates;
             cleanDescription = desc.replace(/<!--taskverse:[\s\S]*?-->/g, "").trim();
         } catch (e) {
             console.warn("Failed to parse taskverse metadata:", e);
@@ -310,13 +317,20 @@ function parseTodoMetadata(rawTodo) {
         cleanDescription = "";
     }
 
+    // Synchronize: if marked completed and dueDate is set, ensure dueDate is included in completedDates
+    if (todo.completed && dueDate && !completedDates.includes(dueDate)) {
+        completedDates.push(dueDate);
+    }
+
     return {
         ...todo,
         cleanDescription,
         priority,
         dueDate,
         category,
-        recurrence
+        recurrence,
+        goal,
+        completedDates
     };
 }
 
@@ -325,7 +339,9 @@ function serializeTodoForBackend(todoInput) {
         priority: todoInput.priority || "Medium",
         dueDate: todoInput.dueDate || getTodayDateString(),
         category: todoInput.category || "Work",
-        recurrence: todoInput.recurrence || { frequency: "none" }
+        recurrence: todoInput.recurrence || { frequency: "none" },
+        goal: todoInput.goal !== undefined && todoInput.goal !== null ? Number(todoInput.goal) : 30,
+        completedDates: Array.isArray(todoInput.completedDates) ? todoInput.completedDates : []
     };
 
     const metaTag = `<!--taskverse:${JSON.stringify(meta)}-->`;
@@ -767,6 +783,8 @@ async function addTodo(taskData = {}) {
     const dueDate = taskData.dueDate || document.getElementById("modal-task-due")?.value || getTodayDateString();
     const priority = taskData.priority || document.getElementById("modal-task-priority")?.value || "Medium";
     const category = taskData.category || document.getElementById("modal-task-category")?.value || "Work";
+    const goal = taskData.goal !== undefined && taskData.goal !== null ? Number(taskData.goal) : (Number(document.getElementById("modal-task-goal")?.value) || 30);
+    const completedDates = Array.isArray(taskData.completedDates) ? taskData.completedDates : [];
 
     const recurrence = taskData.recurrence || {
         frequency: document.getElementById("modal-task-repeat")?.value || "none",
@@ -803,6 +821,8 @@ async function addTodo(taskData = {}) {
             priority,
             category,
             completed: false,
+            goal,
+            completedDates,
             recurrence: taskRecurrence
         });
 
@@ -866,7 +886,10 @@ function updateTodoStatus(todo, onRevert) {
         dueDate: todo.dueDate,
         priority: todo.priority,
         category: todo.category,
-        completed: todo.completed
+        completed: todo.completed,
+        goal: todo.goal,
+        completedDates: todo.completedDates,
+        recurrence: todo.recurrence
     });
 
     fetch(`${getServerUrl()}/api/todo`, {
@@ -1260,10 +1283,9 @@ function renderDashboardView() {
 
 function renderTasksView() {
     const list = document.getElementById("todo-list");
+    const container = document.getElementById("habit-tracker-container");
     const emptyState = document.getElementById("empty-message");
     if (!list) return;
-
-    list.innerHTML = "";
 
     // Render Category Pills in task view
     renderCategoryPills();
@@ -1275,28 +1297,499 @@ function renderTasksView() {
     filtered = sortTasks(filtered, state.sortBy);
 
     if (filtered.length === 0) {
+        if (container) container.style.display = "none";
+        list.style.display = "none";
         if (emptyState) {
             emptyState.style.display = "flex";
             const emptyTitle = document.getElementById("empty-state-title");
             const emptyDesc = document.getElementById("empty-state-desc");
             if (emptyTitle && emptyDesc) {
                 if (state.searchQuery) {
-                    emptyTitle.textContent = "No Missions Found";
-                    emptyDesc.textContent = `No tasks matched your query "${state.searchQuery}".`;
+                    emptyTitle.textContent = "No Habits Found";
+                    emptyDesc.textContent = `No habits matched your query "${state.searchQuery}".`;
                 } else if (state.activeFilter === "overdue") {
-                    emptyTitle.textContent = "No Overdue Missions! 🎉";
-                    emptyDesc.textContent = "All your scheduled missions are up to date or completed.";
+                    emptyTitle.textContent = "No Overdue Habits! 🎉";
+                    emptyDesc.textContent = "All your scheduled habits are up to date or completed.";
                 } else {
-                    emptyTitle.textContent = "No Tasks in this Filter";
-                    emptyDesc.textContent = "Create a new mission or change your filter selection.";
+                    emptyTitle.textContent = "No Habits in this Filter";
+                    emptyDesc.textContent = "Create a new habit or load starter habits from the reference sheet.";
                 }
             }
         }
+        return;
+    }
+
+    if (emptyState) emptyState.style.display = "none";
+
+    const mode = state.habitViewMode || "spreadsheet";
+    const btnSpreadsheet = document.getElementById("btn-view-spreadsheet");
+    const btnCards = document.getElementById("btn-view-cards");
+
+    if (mode === "spreadsheet") {
+        if (btnSpreadsheet) btnSpreadsheet.classList.add("active");
+        if (btnCards) btnCards.classList.remove("active");
+        if (container) container.style.display = "flex";
+        list.style.display = "none";
+        renderHabitTrackerView();
     } else {
-        if (emptyState) emptyState.style.display = "none";
+        if (btnCards) btnCards.classList.add("active");
+        if (btnSpreadsheet) btnSpreadsheet.classList.remove("active");
+        if (container) container.style.display = "none";
+        list.style.display = "grid";
+        list.innerHTML = "";
         filtered.forEach(todo => {
             list.appendChild(createTodoCard(todo));
         });
+    }
+}
+
+// -------------------------------------------------------------
+// Spreadsheet Habit Tracker Engine (Reference Design Inspired)
+// -------------------------------------------------------------
+
+function getHabitIcon(rawTitle, category) {
+    if (!rawTitle) return { icon: "✨", cleanTitle: "Untitled Habit" };
+
+    const titleStr = rawTitle.trim();
+    const emojiRegex = /(\p{Emoji_Presentation}|\p{Extended_Pictographic})/u;
+    const match = titleStr.match(emojiRegex);
+
+    let icon = match ? match[0] : "";
+    let cleanTitle = titleStr;
+
+    if (!icon) {
+        const lower = titleStr.toLowerCase();
+        if (lower.includes("wake") || lower.includes("alarm") || lower.includes("morning")) icon = "⏰";
+        else if (lower.includes("snooze") || lower.includes("snoozing")) icon = "🚫⏰";
+        else if (lower.includes("water") || lower.includes("drink") || lower.includes("hydrate")) icon = "💧";
+        else if (lower.includes("gym") || lower.includes("workout") || lower.includes("fitness") || lower.includes("lift")) icon = "🏋️";
+        else if (lower.includes("stretch") || lower.includes("stretching") || lower.includes("flex")) icon = "🧘";
+        else if (lower.includes("read") || lower.includes("book") || lower.includes("pages")) icon = "📖";
+        else if (lower.includes("meditat") || lower.includes("mindfulness")) icon = "🧘";
+        else if (lower.includes("study") || lower.includes("learn") || lower.includes("exam") || lower.includes("course") || lower.includes("degree")) icon = "🎓";
+        else if (lower.includes("skin") || lower.includes("skincare") || lower.includes("face")) icon = "✨";
+        else if (lower.includes("social") || lower.includes("phone") || lower.includes("screen") || lower.includes("instagram")) icon = "📵";
+        else if (lower.includes("alcohol") || lower.includes("beer") || lower.includes("wine") || lower.includes("drink")) icon = "🚫🍷";
+        else if (lower.includes("expense") || lower.includes("money") || lower.includes("budget") || lower.includes("save") || lower.includes("dollar")) icon = "💵";
+        else if (lower.includes("code") || lower.includes("program") || lower.includes("develop") || lower.includes("git")) icon = "💻";
+        else if (lower.includes("walk") || lower.includes("run") || lower.includes("steps") || lower.includes("jog")) icon = "🏃";
+        else if (lower.includes("eat") || lower.includes("food") || lower.includes("diet") || lower.includes("meal")) icon = "🥗";
+        else if (lower.includes("write") || lower.includes("journal") || lower.includes("blog")) icon = "✍️";
+        else if (lower.includes("clean") || lower.includes("chores") || lower.includes("tidy")) icon = "🧹";
+        else if (lower.includes("sleep") || lower.includes("bed") || lower.includes("rest")) icon = "😴";
+        else {
+            const cat = (category || "").toLowerCase();
+            if (cat.includes("health") || cat.includes("fitness")) icon = "🏃";
+            else if (cat.includes("learning") || cat.includes("education")) icon = "📚";
+            else if (cat.includes("work")) icon = "💼";
+            else if (cat.includes("shopping")) icon = "🛒";
+            else icon = "🎯";
+        }
+    }
+
+    return { icon, cleanTitle };
+}
+
+function setHabitTrackerViewMode(mode) {
+    state.habitViewMode = mode;
+    localStorage.setItem("taskverse_view_mode", mode);
+    renderTasksView();
+}
+
+function navigateHabitTrackerMonth(delta) {
+    state.habitTrackerMonth += delta;
+    if (state.habitTrackerMonth > 11) {
+        state.habitTrackerMonth = 0;
+        state.habitTrackerYear++;
+    } else if (state.habitTrackerMonth < 0) {
+        state.habitTrackerMonth = 11;
+        state.habitTrackerYear--;
+    }
+    renderHabitTrackerView();
+}
+
+function resetHabitTrackerToCurrentMonth() {
+    const now = new Date();
+    state.habitTrackerMonth = now.getMonth();
+    state.habitTrackerYear = now.getFullYear();
+    renderHabitTrackerView();
+}
+
+function toggleHabitDay(taskId, dateStr, isChecked) {
+    const todo = state.todos.find(t => t.id === taskId);
+    if (!todo) return;
+
+    let completedDates = Array.isArray(todo.completedDates) ? [...todo.completedDates] : [];
+    const todayStr = getTodayDateString();
+
+    if (isChecked) {
+        if (!completedDates.includes(dateStr)) {
+            completedDates.push(dateStr);
+        }
+    } else {
+        completedDates = completedDates.filter(d => d !== dateStr);
+    }
+
+    let newCompleted = todo.completed;
+    if (dateStr === todayStr || dateStr === todo.dueDate) {
+        newCompleted = isChecked;
+    }
+
+    const updatedTodo = {
+        ...todo,
+        completedDates,
+        completed: newCompleted
+    };
+
+    // Optimistic in-memory update
+    const idx = state.todos.findIndex(t => t.id === taskId);
+    if (idx !== -1) {
+        state.todos[idx] = updatedTodo;
+    }
+
+    // Trigger achievement effects if toggled for today
+    if (dateStr === todayStr) {
+        onTaskCheckboxUpdated(updatedTodo);
+    }
+
+    updateAnalytics();
+    updateStreaks();
+    renderHabitTrackerView();
+
+    // Persist to backend
+    updateTodoStatus(updatedTodo, () => {
+        if (idx !== -1) {
+            state.todos[idx] = todo;
+            renderHabitTrackerView();
+            updateAnalytics();
+        }
+    });
+}
+
+function renderHabitTrackerView() {
+    const thead = document.getElementById("ht-table-thead");
+    const tbody = document.getElementById("ht-table-tbody");
+    const tfoot = document.getElementById("ht-table-tfoot");
+    const periodLabel = document.getElementById("ht-period-label");
+    const metricCount = document.getElementById("ht-metric-count");
+    const metricToday = document.getElementById("ht-metric-today");
+    const metricConsistency = document.getElementById("ht-metric-consistency");
+
+    if (!thead || !tbody || !tfoot) return;
+
+    const monthNames = [
+        "January", "February", "March", "April", "May", "June",
+        "July", "August", "September", "October", "November", "December"
+    ];
+    const year = state.habitTrackerYear;
+    const month = state.habitTrackerMonth;
+
+    if (periodLabel) {
+        periodLabel.textContent = `${monthNames[month]} ${year}`;
+    }
+
+    // Filter tasks using existing active filter and search
+    let filtered = filterTasks(state.todos, state.activeFilter, state.activeCategory, state.searchQuery);
+    filtered = sortTasks(filtered, state.sortBy);
+
+    // Days in current viewed month
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const dayNamesShort = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    const monthDays = [];
+    const todayStr = getTodayDateString();
+
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dateObj = new Date(year, month, d);
+        const dayOfWeek = dayNamesShort[dateObj.getDay()];
+        const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        monthDays.push({ dayNum: d, dayName: dayOfWeek, dateStr });
+    }
+
+    // Group days into weeks (Week 1: days 1..7, Week 2: days 8..14, etc.)
+    const weeks = [];
+    for (let i = 0; i < monthDays.length; i += 7) {
+        weeks.push({
+            weekIndex: Math.floor(i / 7) + 1,
+            days: monthDays.slice(i, i + 7)
+        });
+    }
+
+    // 1. Build THEAD
+    let headHtml = `
+        <tr>
+            <th class="ht-col-num ht-th-sticky-1" rowspan="2">#</th>
+            <th class="ht-col-habit ht-th-sticky-2" rowspan="2">DAILY HABITS</th>
+            <th class="ht-col-goal ht-th-sticky-3" rowspan="2">GOALS</th>
+    `;
+
+    weeks.forEach(w => {
+        headHtml += `<th class="ht-th-week" colspan="${w.days.length}">WEEK ${w.weekIndex}</th>`;
+    });
+    headHtml += `</tr><tr>`;
+
+    monthDays.forEach(d => {
+        const isToday = d.dateStr === todayStr;
+        headHtml += `
+            <th class="ht-th-day ${isToday ? 'is-today' : ''}" title="${d.dateStr}">
+                <span class="ht-day-name">${d.dayName}</span>
+                <span class="ht-day-num">${d.dayNum}</span>
+            </th>
+        `;
+    });
+    headHtml += `</tr>`;
+    thead.innerHTML = headHtml;
+
+    // 2. Build TBODY
+    tbody.innerHTML = "";
+
+    const dayCompletedTotals = {};
+    monthDays.forEach(d => { dayCompletedTotals[d.dateStr] = 0; });
+
+    let totalHabitsTodayEligible = 0;
+    let totalHabitsTodayCompleted = 0;
+    let totalCompletedMonthAll = 0;
+    let totalGoalAll = 0;
+
+    filtered.forEach((task, idx) => {
+        const tr = document.createElement("tr");
+        tr.className = "ht-row";
+        tr.setAttribute("data-task-id", task.id);
+
+        const iconInfo = getHabitIcon(task.title, task.category);
+        const goal = task.goal !== undefined && task.goal !== null ? Number(task.goal) : 30;
+        totalGoalAll += goal;
+
+        const compDates = Array.isArray(task.completedDates) ? task.completedDates : [];
+        let monthCompletions = 0;
+
+        monthDays.forEach(d => {
+            const isDone = compDates.includes(d.dateStr) || (d.dateStr === task.dueDate && task.completed);
+            if (isDone) {
+                monthCompletions++;
+                dayCompletedTotals[d.dateStr]++;
+            }
+        });
+        totalCompletedMonthAll += monthCompletions;
+
+        const isTodayDone = compDates.includes(todayStr) || (task.dueDate === todayStr && task.completed);
+        totalHabitsTodayEligible++;
+        if (isTodayDone) totalHabitsTodayCompleted++;
+
+        // Cell 1: Number (Sticky 1)
+        const tdNum = document.createElement("td");
+        tdNum.className = "ht-cell-num ht-td-sticky-1";
+        tdNum.textContent = idx + 1;
+        tr.appendChild(tdNum);
+
+        // Cell 2: Habit Details (Sticky 2)
+        const tdHabit = document.createElement("td");
+        tdHabit.className = "ht-cell-habit ht-td-sticky-2";
+
+        const iconSpan = document.createElement("span");
+        iconSpan.className = "ht-habit-icon";
+        iconSpan.textContent = iconInfo.icon;
+        tdHabit.appendChild(iconSpan);
+
+        const detailsDiv = document.createElement("div");
+        detailsDiv.className = "ht-habit-details";
+
+        const titleSpan = document.createElement("span");
+        titleSpan.className = "ht-habit-title";
+        titleSpan.textContent = iconInfo.cleanTitle;
+        titleSpan.title = task.title;
+        detailsDiv.appendChild(titleSpan);
+
+        const catBadge = document.createElement("span");
+        catBadge.className = "badge badge-category ht-badge-mini";
+        catBadge.textContent = task.category || "Work";
+        detailsDiv.appendChild(catBadge);
+        tdHabit.appendChild(detailsDiv);
+
+        // Hover action buttons (Edit, Delete)
+        const actionsDiv = document.createElement("div");
+        actionsDiv.className = "ht-row-actions";
+
+        const editBtn = document.createElement("button");
+        editBtn.type = "button";
+        editBtn.className = "ht-action-btn";
+        editBtn.title = "Edit Habit";
+        editBtn.innerHTML = `✏️`;
+        editBtn.onclick = (e) => {
+            e.stopPropagation();
+            openEditTaskModal(task);
+        };
+
+        const delBtn = document.createElement("button");
+        delBtn.type = "button";
+        delBtn.className = "ht-action-btn delete";
+        delBtn.title = "Delete Habit";
+        delBtn.innerHTML = `🗑️`;
+        delBtn.onclick = (e) => {
+            e.stopPropagation();
+            if (task.recurrence && task.recurrence.seriesId) {
+                openSeriesActionModal(task);
+            } else {
+                deleteTodo(task.id);
+            }
+        };
+
+        actionsDiv.appendChild(editBtn);
+        actionsDiv.appendChild(delBtn);
+        tdHabit.appendChild(actionsDiv);
+        tr.appendChild(tdHabit);
+
+        // Cell 3: Goals (Sticky 3)
+        const tdGoal = document.createElement("td");
+        tdGoal.className = "ht-cell-goal ht-td-sticky-3";
+        const isAchieved = monthCompletions >= goal;
+        tdGoal.innerHTML = `
+            <div class="ht-goal-wrap ${isAchieved ? 'is-achieved' : ''}" title="${monthCompletions}/${goal} completed this month">
+                <span class="ht-goal-target">${goal}</span>
+                <span class="ht-goal-progress">${monthCompletions} done</span>
+            </div>
+        `;
+        tr.appendChild(tdGoal);
+
+        // Day Checkbox Cells
+        monthDays.forEach(d => {
+            const tdDay = document.createElement("td");
+            const isToday = d.dateStr === todayStr;
+            tdDay.className = `ht-cell-day ${isToday ? 'ht-cell-today' : ''}`;
+
+            const isDone = compDates.includes(d.dateStr) || (d.dateStr === task.dueDate && task.completed);
+
+            const wrap = document.createElement("label");
+            wrap.className = "ht-checkbox-wrap";
+            wrap.title = `${task.title} - ${d.dateStr}`;
+
+            const input = document.createElement("input");
+            input.type = "checkbox";
+            input.className = "ht-checkbox-native";
+            input.checked = isDone;
+            input.onchange = function () {
+                toggleHabitDay(task.id, d.dateStr, input.checked);
+            };
+
+            const visual = document.createElement("div");
+            visual.className = "ht-checkbox-visual";
+            visual.innerHTML = `
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                    <polyline points="20 6 9 17 4 12"/>
+                </svg>
+            `;
+
+            wrap.appendChild(input);
+            wrap.appendChild(visual);
+            tdDay.appendChild(wrap);
+            tr.appendChild(tdDay);
+        });
+
+        tbody.appendChild(tr);
+    });
+
+    // 3. Build TFOOT (Daily completion summary)
+    tfoot.innerHTML = "";
+    const trFoot = document.createElement("tr");
+    trFoot.className = "ht-summary-row";
+
+    const tdFootNum = document.createElement("td");
+    tdFootNum.className = "ht-td-sticky-1";
+    trFoot.appendChild(tdFootNum);
+
+    const tdFootLabel = document.createElement("td");
+    tdFootLabel.className = "ht-td-sticky-2 ht-summary-label";
+    tdFootLabel.textContent = "DAILY COMPLETION";
+    trFoot.appendChild(tdFootLabel);
+
+    const tdFootGoal = document.createElement("td");
+    tdFootGoal.className = "ht-td-sticky-3 ht-summary-goal";
+    tdFootGoal.textContent = totalGoalAll;
+    tdFootGoal.title = "Total Goals Target for Month";
+    trFoot.appendChild(tdFootGoal);
+
+    monthDays.forEach(d => {
+        const count = dayCompletedTotals[d.dateStr] || 0;
+        const total = filtered.length;
+        const pct = total > 0 ? Math.round((count / total) * 100) : 0;
+        const isToday = d.dateStr === todayStr;
+
+        const tdSummary = document.createElement("td");
+        tdSummary.className = `ht-cell-day ${isToday ? 'ht-cell-today' : ''}`;
+        tdSummary.innerHTML = `
+            <div class="ht-cell-summary" title="${d.dateStr}: ${count}/${total} (${pct}%)">
+                <span class="ht-summary-count">${count}</span>
+                <span class="ht-summary-pct">${pct}%</span>
+            </div>
+        `;
+        trFoot.appendChild(tdSummary);
+    });
+
+    tfoot.appendChild(trFoot);
+
+    // 4. Update Header Metrics
+    if (metricCount) metricCount.textContent = filtered.length;
+    if (metricToday) metricToday.textContent = `${totalHabitsTodayCompleted}/${totalHabitsTodayEligible}`;
+    const overallConsistency = totalGoalAll > 0
+        ? Math.min(100, Math.round((totalCompletedMonthAll / totalGoalAll) * 100))
+        : (filtered.length > 0 ? Math.round((totalHabitsTodayCompleted / filtered.length) * 100) : 0);
+    if (metricConsistency) metricConsistency.textContent = `${overallConsistency}%`;
+}
+
+async function loadStarterHabitTemplates() {
+    const starterHabits = [
+        { title: "Wake up at 6AM ⏰", goal: 30, category: "Personal", priority: "High" },
+        { title: "No Snoozing 🚫⏰", goal: 30, category: "Personal", priority: "Medium" },
+        { title: "Drink 3L Water 💧", goal: 30, category: "Personal", priority: "High" },
+        { title: "Gym Workout 🏋️", goal: 20, category: "Personal", priority: "High" },
+        { title: "Stretching 🧘", goal: 30, category: "Personal", priority: "Medium" },
+        { title: "Read 10 Pages 📖", goal: 30, category: "Learning", priority: "Medium" },
+        { title: "Meditation 🧘", goal: 30, category: "Personal", priority: "Medium" },
+        { title: "Study 1 Hour 🎓", goal: 30, category: "Learning", priority: "High" },
+        { title: "Skincare Routine ✨", goal: 30, category: "Personal", priority: "Low" },
+        { title: "Limit Social Media 📵", goal: 30, category: "Personal", priority: "High" },
+        { title: "No Alcohol 🚫🍷", goal: 30, category: "Personal", priority: "High" },
+        { title: "Track Expenses 💵", goal: 30, category: "Work", priority: "Medium" }
+    ];
+
+    const currentToken = getToken();
+    if (!currentToken) {
+        showToast("Please sign in to add starter habits.", "error");
+        return;
+    }
+
+    showToast("Adding reference habit tracker templates...", "info");
+    const todayStr = getTodayDateString();
+
+    try {
+        for (const h of starterHabits) {
+            const alreadyExists = state.todos.some(t => t.title.toLowerCase() === h.title.toLowerCase());
+            if (!alreadyExists) {
+                const payload = serializeTodoForBackend({
+                    title: h.title,
+                    description: "",
+                    dueDate: todayStr,
+                    priority: h.priority,
+                    category: h.category,
+                    completed: false,
+                    goal: h.goal,
+                    completedDates: [],
+                    recurrence: { frequency: "daily" }
+                });
+
+                await fetch(`${getServerUrl()}/api/todo/create`, {
+                    method: "POST",
+                    headers: {
+                        "Content-Type": "application/json",
+                        Authorization: `Bearer ${currentToken}`
+                    },
+                    body: JSON.stringify(payload)
+                });
+            }
+        }
+        showToast("Starter habits loaded successfully! 🚀", "success");
+        loadTodos();
+    } catch (e) {
+        handleFetchError(e, "Failed to load starter habits");
     }
 }
 
@@ -2495,6 +2988,8 @@ function openCreateTaskModal(defaults = {}) {
     document.getElementById("modal-task-desc").value = defaults.description || "";
     document.getElementById("modal-task-due").value = defaults.dueDate || getTodayDateString();
     document.getElementById("modal-task-category").value = defaults.category || "Work";
+    const goalInput = document.getElementById("modal-task-goal");
+    if (goalInput) goalInput.value = defaults.goal !== undefined ? defaults.goal : 30;
 
     selectModalPriority(defaults.priority || "Medium");
 
@@ -2532,6 +3027,8 @@ function openEditTaskModal(todo) {
     document.getElementById("modal-task-desc").value = todo.cleanDescription || "";
     document.getElementById("modal-task-due").value = todo.dueDate || getTodayDateString();
     document.getElementById("modal-task-category").value = todo.category || "Work";
+    const editGoalInput = document.getElementById("modal-task-goal");
+    if (editGoalInput) editGoalInput.value = todo.goal !== undefined ? todo.goal : 30;
 
     selectModalPriority(todo.priority || "Medium");
 
@@ -2599,6 +3096,7 @@ function submitTaskModal() {
     const dueDate = document.getElementById("modal-task-due").value;
     const category = document.getElementById("modal-task-category").value;
     const priority = document.getElementById("modal-task-priority").value;
+    const goal = Number(document.getElementById("modal-task-goal")?.value) || 30;
 
     const repeatFreq = document.getElementById("modal-task-repeat")?.value || "none";
     const customDays = getSelectedCustomDays();
@@ -2660,7 +3158,9 @@ function submitTaskModal() {
                 dueDate,
                 category,
                 priority,
+                goal,
                 completed: existing ? existing.completed : false,
+                completedDates: existing ? (existing.completedDates || []) : [],
                 recurrence: existing && existing.recurrence ? existing.recurrence : recurrence
             });
         }
@@ -2672,6 +3172,7 @@ function submitTaskModal() {
             dueDate,
             category,
             priority,
+            goal,
             completed: false,
             recurrence
         });

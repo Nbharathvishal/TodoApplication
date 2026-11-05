@@ -2439,3 +2439,539 @@ body.auth-body {
         grid-template-columns: 1fr;
     }
 }
+
+/* =============================================================
+   SPREADSHEET HABIT TRACKER REDESIGN (Inspired by Reference Design)
+   ============================================================= */
+
+/* View Mode Switcher */
+.view-and-sort-group {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.view-mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    background-color: var(--input-bg);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-sm);
+    padding: 2px;
+    gap: 2px;
+}
+
+.btn-mode-toggle {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    padding: 0.35rem 0.65rem;
+    background: transparent;
+    border: none;
+    border-radius: 4px;
+    color: var(--text-secondary);
+    font-size: 0.75rem;
+    font-weight: 500;
+    cursor: pointer;
+    transition: all var(--transition-fast);
+}
+
+.btn-mode-toggle:hover {
+    color: var(--text-primary);
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.btn-mode-toggle.active {
+    background-color: var(--bg-surface);
+    color: var(--text-primary);
+    font-weight: 600;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.btn-sm {
+    padding: 0.35rem 0.75rem !important;
+    font-size: 0.75rem !important;
+}
+
+/* Habit Tracker Container */
+.habit-tracker-container {
+    background-color: var(--bg-charcoal-subtle);
+    border: 1px solid var(--border-color);
+    border-radius: var(--radius-md);
+    box-shadow: var(--shadow-md);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    position: relative;
+    margin-bottom: 2rem;
+}
+
+/* Controls & Sub-header Bar */
+.ht-controls-bar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 1rem;
+    padding: 0.875rem 1.25rem;
+    background-color: #1a1a1a;
+    border-bottom: 1px solid var(--border-color);
+    flex-wrap: wrap;
+}
+
+.ht-period-nav {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.ht-period-label {
+    font-size: 0.9375rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    min-width: 130px;
+    text-align: center;
+    letter-spacing: -0.01em;
+}
+
+.ht-metrics-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    flex-wrap: wrap;
+}
+
+.ht-metric-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    background: rgba(255, 255, 255, 0.04);
+    border: 1px solid rgba(255, 255, 255, 0.06);
+    padding: 0.25rem 0.65rem;
+    border-radius: var(--radius-full);
+    font-size: 0.75rem;
+}
+
+.ht-metric-lbl {
+    color: var(--text-secondary);
+}
+
+.ht-metric-val {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.ht-actions-group {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+/* Scrollable Spreadsheet Table Wrapper */
+.ht-table-scroll-wrap {
+    overflow-x: auto;
+    overflow-y: visible;
+    -webkit-overflow-scrolling: touch;
+    max-width: 100%;
+    position: relative;
+    background-color: var(--bg-charcoal);
+}
+
+/* Spreadsheet Table */
+.ht-table {
+    width: 100%;
+    border-collapse: separate;
+    border-spacing: 0;
+    font-size: 0.8125rem;
+    color: var(--text-primary);
+    text-align: left;
+    min-width: 900px;
+}
+
+/* Cells & Borders */
+.ht-table th,
+.ht-table td {
+    border-right: 1px solid rgba(255, 255, 255, 0.08);
+    border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    padding: 0.5rem 0.4rem;
+    vertical-align: middle;
+}
+
+/* Header Styles */
+.ht-table thead th {
+    background-color: #1f1f1f;
+    color: var(--text-secondary);
+    font-weight: 600;
+    text-align: center;
+    user-select: none;
+    position: sticky;
+    top: 0;
+}
+
+/* Grouped Week Header Row */
+.ht-th-week {
+    background-color: #19221d !important;
+    color: #6ee7b7 !important;
+    font-size: 0.72rem;
+    font-weight: 800;
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    padding: 0.5rem !important;
+    border-bottom: 1.5px solid #234d3b !important;
+}
+
+/* Day Subheader */
+.ht-th-day {
+    min-width: 38px;
+    width: 40px;
+    max-width: 44px;
+    padding: 0.35rem 0.2rem !important;
+    font-size: 0.7rem;
+    transition: background-color var(--transition-fast);
+}
+
+.ht-th-day .ht-day-name {
+    display: block;
+    color: var(--text-muted);
+    font-size: 0.65rem;
+    text-transform: uppercase;
+    font-weight: 600;
+}
+
+.ht-th-day .ht-day-num {
+    display: block;
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--text-primary);
+    margin-top: 1px;
+}
+
+/* Today Column Highlighting */
+.ht-th-day.is-today {
+    background: linear-gradient(180deg, rgba(34, 197, 94, 0.22) 0%, rgba(34, 197, 94, 0.1) 100%) !important;
+    border-bottom: 2px solid var(--success-green) !important;
+}
+
+.ht-th-day.is-today .ht-day-name {
+    color: #86efac;
+}
+
+.ht-th-day.is-today .ht-day-num {
+    color: #ffffff;
+    font-weight: 800;
+}
+
+.ht-cell-today {
+    background-color: rgba(34, 197, 94, 0.035) !important;
+}
+
+/* STICKY COLUMNS (Preserves header and row content while scrolling days horizontally) */
+.ht-th-sticky-1,
+.ht-td-sticky-1 {
+    position: sticky;
+    left: 0;
+    z-index: 3;
+    width: 38px;
+    min-width: 38px;
+    max-width: 38px;
+    text-align: center;
+    font-weight: 600;
+    color: var(--text-muted);
+    font-size: 0.75rem;
+    background-color: #171717;
+}
+
+.ht-th-sticky-2,
+.ht-td-sticky-2 {
+    position: sticky;
+    left: 38px;
+    z-index: 3;
+    width: 260px;
+    min-width: 240px;
+    max-width: 320px;
+    background-color: #171717;
+}
+
+.ht-th-sticky-3,
+.ht-td-sticky-3 {
+    position: sticky;
+    left: 298px; /* 38px + 260px */
+    z-index: 3;
+    width: 72px;
+    min-width: 65px;
+    max-width: 80px;
+    text-align: center;
+    background-color: #171717;
+    box-shadow: 5px 0 10px -3px rgba(0, 0, 0, 0.45);
+}
+
+/* Sticky Headers Layering */
+.ht-table thead th.ht-th-sticky-1,
+.ht-table thead th.ht-th-sticky-2,
+.ht-table thead th.ht-th-sticky-3 {
+    z-index: 8;
+    background-color: #1c1c1c;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+}
+
+/* Habit Row Elements */
+.ht-row {
+    transition: background-color var(--transition-fast);
+}
+
+.ht-row:hover {
+    background-color: rgba(255, 255, 255, 0.03);
+}
+
+.ht-row:hover .ht-td-sticky-1,
+.ht-row:hover .ht-td-sticky-2,
+.ht-row:hover .ht-td-sticky-3 {
+    background-color: #1f1f1f;
+}
+
+.ht-cell-habit {
+    display: flex;
+    align-items: center;
+    gap: 0.65rem;
+    padding: 0.55rem 0.75rem !important;
+    position: relative;
+}
+
+.ht-habit-icon {
+    font-size: 1.25rem;
+    line-height: 1;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 26px;
+}
+
+.ht-habit-details {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    flex: 1;
+}
+
+.ht-habit-title {
+    font-size: 0.84rem;
+    font-weight: 600;
+    color: var(--text-primary);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    line-height: 1.3;
+}
+
+.ht-badge-mini {
+    font-size: 0.65rem !important;
+    padding: 1px 6px !important;
+    align-self: flex-start;
+    margin-top: 2px;
+}
+
+/* Hover Quick Actions on Habit Row */
+.ht-row-actions {
+    display: none;
+    align-items: center;
+    gap: 0.25rem;
+    margin-left: auto;
+}
+
+.ht-row:hover .ht-row-actions {
+    display: inline-flex;
+}
+
+.ht-action-btn {
+    background: transparent;
+    border: none;
+    color: var(--text-secondary);
+    padding: 3px;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 0.8125rem;
+    line-height: 1;
+    transition: all var(--transition-fast);
+}
+
+.ht-action-btn:hover {
+    color: var(--text-primary);
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.ht-action-btn.delete:hover {
+    color: #f87171;
+    background-color: rgba(239, 68, 68, 0.15);
+}
+
+/* Goals Column Styling */
+.ht-goal-wrap {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 1px;
+}
+
+.ht-goal-target {
+    font-size: 0.92rem;
+    font-weight: 800;
+    color: #e5e5e5;
+    letter-spacing: -0.01em;
+}
+
+.ht-goal-progress {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+}
+
+.ht-goal-wrap.is-achieved .ht-goal-target {
+    color: var(--success-green);
+}
+
+.ht-goal-wrap.is-achieved .ht-goal-progress {
+    color: #86efac;
+    font-weight: 600;
+}
+
+/* Spreadsheet Checkboxes */
+.ht-cell-day {
+    text-align: center;
+    padding: 0.4rem 0.2rem !important;
+}
+
+.ht-checkbox-wrap {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    position: relative;
+    user-select: none;
+    padding: 2px;
+}
+
+.ht-checkbox-native {
+    position: absolute;
+    opacity: 0;
+    width: 0;
+    height: 0;
+    cursor: pointer;
+}
+
+.ht-checkbox-visual {
+    width: 22px;
+    height: 22px;
+    border: 1.5px solid rgba(255, 255, 255, 0.22);
+    border-radius: 4px;
+    background-color: rgba(0, 0, 0, 0.25);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: transparent;
+    transition: all 0.15s cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+.ht-checkbox-visual svg {
+    width: 14px;
+    height: 14px;
+    opacity: 0;
+    transform: scale(0.6);
+    transition: all 0.18s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+/* Hover Checkbox */
+.ht-checkbox-wrap:hover .ht-checkbox-visual {
+    border-color: rgba(255, 255, 255, 0.55);
+    background-color: rgba(255, 255, 255, 0.06);
+}
+
+/* Checked State */
+.ht-checkbox-native:checked + .ht-checkbox-visual {
+    background-color: #10b981;
+    border-color: #10b981;
+    color: #ffffff;
+    box-shadow: 0 0 8px rgba(16, 185, 129, 0.45);
+}
+
+.ht-checkbox-native:checked + .ht-checkbox-visual svg {
+    opacity: 1;
+    transform: scale(1);
+    stroke: #ffffff;
+}
+
+/* Completed Row Visual Cue */
+.ht-row.is-habit-completed .ht-habit-title {
+    color: var(--text-secondary);
+}
+
+/* Summary Row at Table Bottom */
+.ht-summary-row td {
+    background-color: #161a18 !important;
+    border-top: 1.5px solid #234d3b !important;
+    font-size: 0.72rem;
+    padding: 0.5rem 0.25rem !important;
+    text-align: center;
+}
+
+.ht-summary-label {
+    text-align: right !important;
+    font-weight: 700;
+    color: #a7f3d0 !important;
+    letter-spacing: 0.05em;
+    padding-right: 1rem !important;
+    text-transform: uppercase;
+}
+
+.ht-summary-goal {
+    font-weight: 800;
+    color: #a7f3d0 !important;
+}
+
+.ht-cell-summary {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+}
+
+.ht-summary-count {
+    font-weight: 800;
+    color: var(--text-primary);
+    font-size: 0.75rem;
+}
+
+.ht-summary-pct {
+    font-size: 0.65rem;
+    color: var(--text-muted);
+}
+
+/* Tablet & Mobile Responsiveness */
+@media (max-width: 900px) {
+    .ht-controls-bar {
+        flex-direction: column;
+        align-items: stretch;
+    }
+    .ht-period-nav {
+        justify-content: center;
+    }
+    .ht-metrics-summary {
+        justify-content: center;
+    }
+    .ht-actions-group {
+        justify-content: center;
+    }
+    .ht-th-sticky-2,
+    .ht-td-sticky-2 {
+        width: 180px;
+        min-width: 170px;
+    }
+    .ht-th-sticky-3,
+    .ht-td-sticky-3 {
+        left: 218px; /* 38px + 180px */
+    }
+}
+
