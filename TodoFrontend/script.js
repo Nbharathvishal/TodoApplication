@@ -312,6 +312,18 @@ function parseTodoMetadata(rawTodo) {
         cleanDescription = desc.replace(/<!--taskverse:[\s\S]*?-->/g, "").trim();
     }
 
+    // Merge persistent local habit tracking history if available
+    const cacheKey = "taskverse_habit_dates_" + (rawTodo.id || rawTodo.title);
+    try {
+        const cachedRaw = localStorage.getItem(cacheKey);
+        if (cachedRaw) {
+            const cachedArr = JSON.parse(cachedRaw);
+            if (Array.isArray(cachedArr)) {
+                completedDates = Array.from(new Set([...completedDates, ...cachedArr]));
+            }
+        }
+    } catch (e) {}
+
     // If cleanDescription was automatically defaulted to title, treat it as empty for UI
     if (cleanDescription === todo.title) {
         cleanDescription = "";
@@ -335,11 +347,16 @@ function parseTodoMetadata(rawTodo) {
 }
 
 function serializeTodoForBackend(todoInput) {
+    let cleanRecurrence = todoInput.recurrence || { frequency: "none" };
+    if (!cleanRecurrence.frequency || cleanRecurrence.frequency === "none") {
+        cleanRecurrence = { frequency: "none" };
+    }
+
     const meta = {
         priority: todoInput.priority || "Medium",
         dueDate: todoInput.dueDate || getTodayDateString(),
         category: todoInput.category || "Work",
-        recurrence: todoInput.recurrence || { frequency: "none" },
+        recurrence: cleanRecurrence,
         goal: todoInput.goal !== undefined && todoInput.goal !== null ? Number(todoInput.goal) : 30,
         completedDates: Array.isArray(todoInput.completedDates) ? todoInput.completedDates : []
     };
@@ -355,12 +372,19 @@ function serializeTodoForBackend(todoInput) {
         finalDescription = `${strippedDesc}\n${metaTag}`;
     }
 
-    return {
-        id: todoInput.id,
+    const isComp = Boolean(todoInput.completed ?? todoInput.isCompleted);
+    const result = {
         title: todoInput.title,
         description: finalDescription,
-        completed: Boolean(todoInput.completed)
+        completed: isComp,
+        isCompleted: isComp
     };
+
+    if (todoInput.id !== undefined && todoInput.id !== null && todoInput.id !== "") {
+        result.id = Number(todoInput.id);
+    }
+
+    return result;
 }
 
 // -------------------------------------------------------------
@@ -698,7 +722,8 @@ function deleteSingleOccurrence(id) {
 // -------------------------------------------------------------
 function loadTodos() {
     const currentToken = getToken();
-    if (!currentToken) {
+    if (!currentToken || isTokenExpired(currentToken)) {
+        localStorage.removeItem("token");
         window.location.href = "login.html";
         return;
     }
@@ -813,6 +838,28 @@ async function addTodo(taskData = {}) {
     }
     state.isSubmittingTask = true;
 
+    const abortCtrl = new AbortController();
+    state.activeTaskAbortController = abortCtrl;
+
+    // Progressive status updates for remote cold start (e.g., Render free tier)
+    const wakeTimer1 = setTimeout(() => {
+        if (state.isSubmittingTask && saveBtn) {
+            saveBtn.textContent = "Waking server... ⏳";
+        }
+    }, 2800);
+
+    const wakeTimer2 = setTimeout(() => {
+        if (state.isSubmittingTask && saveBtn) {
+            saveBtn.textContent = "Almost ready... ☕";
+        }
+    }, 12000);
+
+    const timeoutTimer = setTimeout(() => {
+        try {
+            abortCtrl.abort();
+        } catch (e) {}
+    }, 45000);
+
     try {
         const payload = serializeTodoForBackend({
             title,
@@ -833,8 +880,13 @@ async function addTodo(taskData = {}) {
                 "Content-Type": "application/json",
                 Authorization: `Bearer ${currentToken}`
             },
-            body: JSON.stringify(payload)
+            body: JSON.stringify(payload),
+            signal: abortCtrl.signal
         });
+
+        clearTimeout(wakeTimer1);
+        clearTimeout(wakeTimer2);
+        clearTimeout(timeoutTimer);
 
         if (!res.ok) {
             if (res.status === 401 || res.status === 403) {
@@ -857,9 +909,20 @@ async function addTodo(taskData = {}) {
         showToast(successMsg, "success");
         loadTodos();
     } catch (error) {
-        handleFetchError(error, "Failed to create mission");
+        clearTimeout(wakeTimer1);
+        clearTimeout(wakeTimer2);
+        clearTimeout(timeoutTimer);
+        if (error.name === "AbortError") {
+            showToast("Server took too long to respond. The server is now awake — please click Save again!", "warning");
+        } else {
+            handleFetchError(error, "Failed to create mission");
+        }
     } finally {
+        clearTimeout(wakeTimer1);
+        clearTimeout(wakeTimer2);
+        clearTimeout(timeoutTimer);
         state.isSubmittingTask = false;
+        state.activeTaskAbortController = null;
         if (saveBtn) {
             saveBtn.disabled = false;
             saveBtn.textContent = "Save Mission";
@@ -902,6 +965,35 @@ function updateTodoStatus(todo, onRevert) {
     })
     .then(async response => {
         if (!response.ok) {
+            // Self-heal: If /api/todo returned 404 (task id not found under current user in DB),
+            // recreate under authenticated user so completion state & metadata are preserved seamlessly
+            if (response.status === 404) {
+                try {
+                    const healPayload = { ...payload };
+                    delete healPayload.id;
+                    const createRes = await fetch(`${getServerUrl()}/api/todo/create`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${currentToken}`
+                        },
+                        body: JSON.stringify(healPayload)
+                    });
+                    if (createRes.ok) {
+                        const newlyCreated = await createRes.json();
+                        const oldId = payload.id;
+                        if (oldId) {
+                            const found = state.todos.find(t => t.id == oldId);
+                            if (found) {
+                                found.id = newlyCreated.id;
+                            }
+                        }
+                        return newlyCreated;
+                    }
+                } catch (healErr) {
+                    console.warn("Self-healing recreation failed:", healErr);
+                }
+            }
             if (response.status === 401 || response.status === 403) {
                 localStorage.removeItem("token");
                 showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
@@ -918,7 +1010,14 @@ function updateTodoStatus(todo, onRevert) {
     .then(updated => {
         const msg = todo.completed ? "Mission completed! 🔥" : "Mission reopened";
         showToast(msg, "info");
-        loadTodos();
+        // Update local state without full reload so UI stays snappy
+        const idx = state.todos.findIndex(t => t.id == todo.id);
+        if (idx !== -1 && updated) {
+            state.todos[idx] = parseTodoMetadata(updated);
+        }
+        updateAnalytics();
+        renderMassMeterAndAchievements();
+        updateStreaks();
     })
     .catch(error => {
         if (typeof onRevert === "function") onRevert();
@@ -956,6 +1055,25 @@ function updateTodoDetails(taskData) {
     })
     .then(async response => {
         if (!response.ok) {
+            if (response.status === 404) {
+                try {
+                    const healPayload = { ...payload };
+                    delete healPayload.id;
+                    const createRes = await fetch(`${getServerUrl()}/api/todo/create`, {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${currentToken}`
+                        },
+                        body: JSON.stringify(healPayload)
+                    });
+                    if (createRes.ok) {
+                        return createRes.json();
+                    }
+                } catch (healErr) {
+                    console.warn("Self-healing recreation failed:", healErr);
+                }
+            }
             if (response.status === 401 || response.status === 403) {
                 localStorage.removeItem("token");
                 showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
@@ -1052,14 +1170,9 @@ function switchView(viewName, filterParam) {
             if (subElem) subElem.textContent = "Command Center & Analytics";
             break;
         case "tasks":
-            if (titleElem) titleElem.textContent = "My Tasks";
-            if (subElem) subElem.textContent = "Organize, filter, and execute missions";
+            if (titleElem) titleElem.textContent = "Habit Tracker";
+            if (subElem) subElem.textContent = "Daily habits, targets, and consistency";
             if (filterParam) applyTaskFilter(filterParam);
-            break;
-        case "calendar":
-            if (titleElem) titleElem.textContent = "Mission Calendar";
-            if (subElem) subElem.textContent = "Timeline & Deadlines Schedule";
-            renderCalendar();
             break;
         case "categories":
             if (titleElem) titleElem.textContent = "Task Categories";
@@ -1069,6 +1182,10 @@ function switchView(viewName, filterParam) {
         case "settings":
             if (titleElem) titleElem.textContent = "Settings";
             if (subElem) subElem.textContent = "Preferences & System Configuration";
+            break;
+        default:
+            if (titleElem) titleElem.textContent = "Dashboard";
+            if (subElem) subElem.textContent = "Command Center & Analytics";
             break;
     }
 
@@ -1252,8 +1369,6 @@ function renderCurrentView() {
         renderDashboardView();
     } else if (state.currentView === "tasks") {
         renderTasksView();
-    } else if (state.currentView === "calendar") {
-        renderCalendar();
     } else if (state.currentView === "categories") {
         renderCategoriesView();
     }
@@ -1416,7 +1531,7 @@ function resetHabitTrackerToCurrentMonth() {
 }
 
 function toggleHabitDay(taskId, dateStr, isChecked) {
-    const todo = state.todos.find(t => t.id === taskId);
+    const todo = state.todos.find(t => t.id == taskId);
     if (!todo) return;
 
     let completedDates = Array.isArray(todo.completedDates) ? [...todo.completedDates] : [];
@@ -1435,17 +1550,27 @@ function toggleHabitDay(taskId, dateStr, isChecked) {
         newCompleted = isChecked;
     }
 
+    const resolvedId = (todo.id !== undefined && todo.id !== null) ? Number(todo.id) : (taskId !== undefined ? Number(taskId) : undefined);
+
     const updatedTodo = {
         ...todo,
+        id: resolvedId,
         completedDates,
-        completed: newCompleted
+        completed: newCompleted,
+        isCompleted: newCompleted
     };
 
     // Optimistic in-memory update
-    const idx = state.todos.findIndex(t => t.id === taskId);
+    const idx = state.todos.findIndex(t => t.id == taskId);
     if (idx !== -1) {
         state.todos[idx] = updatedTodo;
     }
+
+    // Persist to local cache immediately
+    const cacheKey = "taskverse_habit_dates_" + (resolvedId || todo.title);
+    try {
+        localStorage.setItem(cacheKey, JSON.stringify(completedDates));
+    } catch (e) {}
 
     // Trigger achievement effects if toggled for today
     if (dateStr === todayStr) {
@@ -1752,8 +1877,12 @@ async function loadStarterHabitTemplates() {
     ];
 
     const currentToken = getToken();
-    if (!currentToken) {
-        showToast("Please sign in to add starter habits.", "error");
+    if (!currentToken || isTokenExpired(currentToken)) {
+        localStorage.removeItem("token");
+        showToast("Session expired or missing. Please sign in again.", "error");
+        setTimeout(() => {
+            window.location.href = "login.html";
+        }, 800);
         return;
     }
 
@@ -1776,7 +1905,7 @@ async function loadStarterHabitTemplates() {
                     recurrence: { frequency: "daily" }
                 });
 
-                await fetch(`${getServerUrl()}/api/todo/create`, {
+                const res = await fetch(`${getServerUrl()}/api/todo/create`, {
                     method: "POST",
                     headers: {
                         "Content-Type": "application/json",
@@ -1784,6 +1913,17 @@ async function loadStarterHabitTemplates() {
                     },
                     body: JSON.stringify(payload)
                 });
+
+                if (!res.ok) {
+                    if (res.status === 401 || res.status === 403) {
+                        localStorage.removeItem("token");
+                        showToast("Session expired (HTTP 403). Please sign in again.", "error");
+                        setTimeout(() => {
+                            window.location.href = "login.html";
+                        }, 1000);
+                        return;
+                    }
+                }
             }
         }
         showToast("Starter habits loaded successfully! 🚀", "success");
@@ -3069,6 +3209,12 @@ function openEditTaskModal(todo) {
 }
 
 function closeTaskModal() {
+    if (state.activeTaskAbortController) {
+        try {
+            state.activeTaskAbortController.abort();
+        } catch (e) {}
+        state.activeTaskAbortController = null;
+    }
     state.isSubmittingTask = false;
     const saveBtn = document.getElementById("modal-task-save-btn");
     if (saveBtn) {
@@ -3371,6 +3517,11 @@ function saveUserPreferences() {
 // Global Event Listeners & Initialization
 // -------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", function () {
+    // Pre-warm backend (helps wake up free-tier cold instances early)
+    try {
+        fetch(`${getServerUrl()}/auth/ping`, { method: "GET", mode: "cors", cache: "no-store" }).catch(() => {});
+    } catch (e) {}
+
     // Initialize server selector UI
     updateServerSelectorUI();
 
