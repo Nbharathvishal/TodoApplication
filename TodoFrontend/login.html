@@ -8,6 +8,28 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <script>
+        (function() {
+            try {
+                var email = localStorage.getItem("userEmail");
+                var theme = null;
+                if (email) {
+                    var raw = localStorage.getItem("taskverse_prefs_" + email);
+                    if (raw) {
+                        var prefs = JSON.parse(raw);
+                        if (prefs && prefs.theme) theme = prefs.theme;
+                    }
+                }
+                if (!theme) {
+                    var globalTheme = localStorage.getItem("taskverse_theme");
+                    if (globalTheme) theme = globalTheme;
+                }
+                document.documentElement.setAttribute("data-theme", theme || "light");
+            } catch (e) {
+                document.documentElement.setAttribute("data-theme", "light");
+            }
+        })();
+    </script>
 </head>
 <body class="auth-body">
     <div class="auth-wrapper">
@@ -54,13 +76,12 @@
         <div class="auth-footer">
             Don't have an account? <a href="register.html">Create one</a>
         </div>
-
-        
     </div>
 
     <!-- Toast Notifications -->
     <div id="toast-container" class="toast-container"></div>
 
+    <script src="config.js"></script>
     <script src="script.js"></script>
 </body>
 </html>

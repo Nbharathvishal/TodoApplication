@@ -1,46 +1,72 @@
-// TaskVerse — Modern Productivity Dashboard & Command Engine
-// Preserves and extends all existing authentication & CRUD operations.
+// =============================================================
+// TaskVerse — Centralized Environment & API Configuration
+// Automatic Backend Selection:
+// - Local development (localhost / 127.0.0.1 / file:) -> http://localhost:8080
+// - Production (deployed / live host)                 -> https://todo-backend-zyqf.onrender.com
+// =============================================================
 
-const CLOUD_SERVER_URL = "https://todo-backend-zyqf.onrender.com";
-const LOCAL_SERVER_URL = "http://localhost:8080";
+const ENV_CONFIG = {
+    development: {
+        API_BASE_URL: "http://localhost:8080"
+    },
+    production: {
+        API_BASE_URL: "https://todo-backend-zyqf.onrender.com"
+    }
+};
+
+const CLOUD_SERVER_URL = ENV_CONFIG.production.API_BASE_URL;
+const LOCAL_SERVER_URL = ENV_CONFIG.development.API_BASE_URL;
+
+function isLocalEnvironment() {
+    if (typeof window === "undefined" || !window.location) return true;
+    const hostname = window.location.hostname;
+    return (
+        hostname === "localhost" ||
+        hostname === "127.0.0.1" ||
+        hostname === "0.0.0.0" ||
+        hostname === "[::1]" ||
+        hostname.endsWith(".localhost") ||
+        window.location.protocol === "file:"
+    );
+}
 
 function getServerUrl() {
-    const saved = localStorage.getItem("taskverse_server_url");
-    if (saved) return saved;
-    // Default to the live Cloud Render server so that opening files locally via Live Server / file:
-    // works immediately without needing local PostgreSQL/Spring Boot running.
-    // Users can toggle to Local (Port 8080) at any time.
-    return CLOUD_SERVER_URL;
+    // 1. Support runtime environment injection (window.__ENV__ or process.env)
+    if (typeof window !== "undefined" && window.__ENV__ && window.__ENV__.API_BASE_URL) {
+        return window.__ENV__.API_BASE_URL;
+    }
+    // 2. Automatically select environment by hostname
+    return isLocalEnvironment()
+        ? ENV_CONFIG.development.API_BASE_URL
+        : ENV_CONFIG.production.API_BASE_URL;
 }
+
+// Clear any obsolete manual selection from previous sessions so environment is always automatic
+try {
+    if (typeof localStorage !== "undefined") {
+        localStorage.removeItem("taskverse_server_url");
+    }
+} catch (e) {}
 
 let SERVER_URL = getServerUrl();
 
-function switchBackend(target) {
-    if (target === "local") {
-        SERVER_URL = LOCAL_SERVER_URL;
-        localStorage.setItem("taskverse_server_url", LOCAL_SERVER_URL);
-        showToast("Switched to Local Backend (http://localhost:8080)", "info");
-    } else {
-        SERVER_URL = CLOUD_SERVER_URL;
-        localStorage.setItem("taskverse_server_url", CLOUD_SERVER_URL);
-        showToast("Switched to Cloud Backend (Render)", "success");
-    }
-    updateServerSelectorUI();
+function switchBackend() {
+    console.warn("Manual backend switching is disabled. TaskVerse automatically connects to the appropriate environment.");
 }
 
 function updateServerSelectorUI() {
     SERVER_URL = getServerUrl();
     const isCloud = SERVER_URL.includes("onrender.com");
 
-    const btnCloud = document.getElementById("btn-server-cloud");
-    const btnLocal = document.getElementById("btn-server-local");
-    const display = document.getElementById("server-url-display");
     const settingsDisplay = document.getElementById("settings-server-url");
+    const envBadge = document.getElementById("settings-server-env-badge");
 
-    if (btnCloud) btnCloud.classList.toggle("active", isCloud);
-    if (btnLocal) btnLocal.classList.toggle("active", !isCloud);
-    if (display) display.textContent = `Target API: ${SERVER_URL}`;
-    if (settingsDisplay) settingsDisplay.textContent = SERVER_URL;
+    if (settingsDisplay) {
+        settingsDisplay.textContent = `${SERVER_URL} (${isCloud ? "Production" : "Local Development"})`;
+    }
+    if (envBadge) {
+        envBadge.textContent = isCloud ? "Production" : "Local";
+    }
 }
 
 function handleFetchError(error, contextMsg = "Request failed") {
@@ -57,10 +83,18 @@ function handleFetchError(error, contextMsg = "Request failed") {
         return;
     }
 
+    if (error && (error.name === "AbortError" || (error.message && error.message.includes("aborted")))) {
+        showToast(
+            `Connection timed out (${current}). Free Render servers take ~50s to cold start, or local server is stopped.`,
+            "error"
+        );
+        return;
+    }
+
     if (error.message === "Failed to fetch" || error.name === "TypeError") {
         if (isLocalTarget) {
             showToast(
-                `Local backend connection refused at ${current}. Ensure your Spring Boot service is running on port 8080, or switch to Cloud (Render).`,
+                `Local backend connection refused at ${current}. Please ensure Spring Boot is running on port 8080.`,
                 "error"
             );
         } else {
@@ -137,7 +171,7 @@ function login() {
 
     if (!emailElem || !passwordElem) return;
 
-    const email = emailElem.value.trim();
+    const email = emailElem.value.trim().toLowerCase();
     const password = passwordElem.value;
 
     if (!email || !password) {
@@ -150,14 +184,35 @@ function login() {
         btn.textContent = "Authenticating...";
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    const isCloud = getServerUrl().includes("onrender.com");
+    let wakeNoticeTimer = null;
+    if (isCloud) {
+        wakeNoticeTimer = setTimeout(() => {
+            showToast("Cloud server is spinning up (free tier cold start can take ~30-50s)...", "info");
+        }, 3500);
+    }
+
     fetch(`${getServerUrl()}/auth/login`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password }),
+        signal: controller.signal
     })
     .then(response => {
         if (!response.ok) {
-            return response.text().then(text => { throw new Error(text || "Login Failed"); });
+            return response.text().then(text => {
+                let msg = text;
+                try {
+                    const parsed = JSON.parse(text);
+                    if (parsed && (parsed.message || parsed.error)) {
+                        msg = parsed.message || parsed.error;
+                    }
+                } catch (e) {}
+                throw new Error(msg || "Login Failed");
+            });
         }
         return response.json();
     })
@@ -173,6 +228,8 @@ function login() {
         handleFetchError(error, "Login Failed");
     })
     .finally(() => {
+        clearTimeout(timeoutId);
+        if (wakeNoticeTimer) clearTimeout(wakeNoticeTimer);
         if (btn) {
             btn.disabled = false;
             btn.textContent = "Sign In";
@@ -188,7 +245,7 @@ function register() {
 
     if (!emailElem || !passwordElem) return;
 
-    const email = emailElem.value.trim();
+    const email = emailElem.value.trim().toLowerCase();
     const password = passwordElem.value;
 
     if (!email || !password) {
@@ -201,25 +258,53 @@ function register() {
         btn.textContent = "Creating Account...";
     }
 
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 60000);
+
+    const isCloud = getServerUrl().includes("onrender.com");
+    let wakeNoticeTimer = null;
+    if (isCloud) {
+        wakeNoticeTimer = setTimeout(() => {
+            showToast("Cloud server is spinning up (free tier cold start can take ~30-50s)...", "info");
+        }, 3500);
+    }
+
     fetch(`${getServerUrl()}/auth/register`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password })
+        body: JSON.stringify({ email, password }),
+        signal: controller.signal
     })
     .then(response => {
         if (response.ok) {
+            // Newly registered users receive Light Mode by default
+            try {
+                localStorage.setItem("taskverse_theme", "light");
+                localStorage.setItem(`taskverse_prefs_${email}`, JSON.stringify({ theme: "light" }));
+            } catch (e) {}
             showToast("Registration successful! Please login.", "success");
             setTimeout(() => {
                 window.location.href = "login.html";
             }, 600);
         } else {
-            return response.text().then(text => { throw new Error(text || "Registration Failed"); });
+            return response.text().then(text => {
+                let msg = text;
+                try {
+                    const parsed = JSON.parse(text);
+                    if (parsed && (parsed.message || parsed.error)) {
+                        msg = parsed.message || parsed.error;
+                    }
+                } catch (e) {}
+                throw new Error(msg || "Registration Failed");
+            });
         }
     })
     .catch(error => {
         handleFetchError(error, "Registration Failed");
     })
     .finally(() => {
+        clearTimeout(timeoutId);
+        if (wakeNoticeTimer) clearTimeout(wakeNoticeTimer);
         if (btn) {
             btn.disabled = false;
             btn.textContent = "Register Account";
@@ -1145,48 +1230,94 @@ function deleteTodo(id) {
 }
 
 // -------------------------------------------------------------
-// UI Navigation & View Switcher
+// UI Navigation, Route Sync & View Switcher
 // -------------------------------------------------------------
-function switchView(viewName, filterParam) {
-    state.currentView = viewName;
+function switchView(viewName, filterParam, updateHistory = true) {
+    let targetSection = viewName;
+    let targetFilter = filterParam;
+    let activeNavKey = viewName;
 
-    // Toggle active section
+    // Canonicalize route & section targets
+    if (viewName === "today") {
+        targetSection = "tasks";
+        targetFilter = "today";
+        activeNavKey = "today";
+    } else if (viewName === "completed") {
+        targetSection = "tasks";
+        targetFilter = "completed";
+        activeNavKey = "completed";
+    } else if (viewName === "tasks" || viewName === "habits") {
+        targetSection = "tasks";
+        if (filterParam === "today") {
+            activeNavKey = "today";
+            targetFilter = "today";
+        } else if (filterParam === "completed") {
+            activeNavKey = "completed";
+            targetFilter = "completed";
+        } else {
+            activeNavKey = "tasks";
+            targetFilter = filterParam || "all";
+        }
+    } else if (viewName === "dashboard") {
+        targetSection = "dashboard";
+        activeNavKey = "dashboard";
+    } else if (viewName === "categories") {
+        targetSection = "categories";
+        activeNavKey = "categories";
+    } else if (viewName === "settings") {
+        targetSection = "settings";
+        activeNavKey = "settings";
+    }
+
+    state.currentView = targetSection;
+    state.activeNav = activeNavKey;
+
+    // 1. Toggle active content view section in DOM
     document.querySelectorAll(".view-section").forEach(sec => sec.classList.remove("active"));
-    const activeSec = document.getElementById(`view-${viewName}`);
+    const activeSec = document.getElementById(`view-${targetSection}`);
     if (activeSec) activeSec.classList.add("active");
 
-    // Toggle active nav button
-    document.querySelectorAll(".sidebar-nav .nav-item").forEach(btn => btn.classList.remove("active"));
-    const activeBtn = document.querySelector(`.sidebar-nav .nav-item[data-view="${viewName}"]`);
-    if (activeBtn) activeBtn.classList.add("active");
+    // 2. Synchronize active state on sidebar navigation item strictly
+    document.querySelectorAll(".sidebar-nav .nav-item").forEach(btn => {
+        const itemKey = btn.getAttribute("data-view");
+        btn.classList.toggle("active", itemKey === activeNavKey);
+    });
 
-    // Contextual Titles
+    // 3. Update URL hash for direct access, refresh, back/forward navigation
+    if (updateHistory && typeof window !== "undefined" && window.location) {
+        let routeHash = activeNavKey;
+        if (activeNavKey === "tasks") routeHash = "habits";
+        if (window.location.hash !== `#${routeHash}`) {
+            history.pushState({ route: routeHash }, "", `#${routeHash}`);
+        }
+    }
+
+    // 4. Contextual Titles & Specific View Actions
     const titleElem = document.getElementById("page-title");
     const subElem = document.getElementById("page-subtitle");
 
-    switch (viewName) {
-        case "dashboard":
-            if (titleElem) titleElem.textContent = "Dashboard";
-            if (subElem) subElem.textContent = "Command Center & Analytics";
-            break;
-        case "tasks":
-            if (titleElem) titleElem.textContent = "Habit Tracker";
-            if (subElem) subElem.textContent = "Daily habits, targets, and consistency";
-            if (filterParam) applyTaskFilter(filterParam);
-            break;
-        case "categories":
-            if (titleElem) titleElem.textContent = "Task Categories";
-            if (subElem) subElem.textContent = "Domains and tags configuration";
-            renderCategoriesView();
-            break;
-        case "settings":
-            if (titleElem) titleElem.textContent = "Settings";
-            if (subElem) subElem.textContent = "Preferences & System Configuration";
-            break;
-        default:
-            if (titleElem) titleElem.textContent = "Dashboard";
-            if (subElem) subElem.textContent = "Command Center & Analytics";
-            break;
+    if (activeNavKey === "today") {
+        if (titleElem) titleElem.textContent = "Today's Habits";
+        if (subElem) subElem.textContent = "Focus on what needs to be executed today";
+        applyTaskFilter("today", false);
+    } else if (activeNavKey === "completed") {
+        if (titleElem) titleElem.textContent = "Completed Habits";
+        if (subElem) subElem.textContent = "Review finished habits and milestones";
+        applyTaskFilter("completed", false);
+    } else if (activeNavKey === "tasks") {
+        if (titleElem) titleElem.textContent = "Habit Tracker";
+        if (subElem) subElem.textContent = "Daily habits, targets, and consistency";
+        if (targetFilter) applyTaskFilter(targetFilter, false);
+    } else if (activeNavKey === "categories") {
+        if (titleElem) titleElem.textContent = "Task Categories";
+        if (subElem) subElem.textContent = "Domains and tags configuration";
+        renderCategoriesView();
+    } else if (activeNavKey === "settings") {
+        if (titleElem) titleElem.textContent = "Settings";
+        if (subElem) subElem.textContent = "Preferences & System Configuration";
+    } else {
+        if (titleElem) titleElem.textContent = "Dashboard";
+        if (subElem) subElem.textContent = "Command Center & Analytics";
     }
 
     // Close mobile drawer if open
@@ -1375,25 +1506,7 @@ function renderCurrentView() {
 }
 
 function renderDashboardView() {
-    // Render Today's Focus Missions
-    const todayStr = getTodayDateString();
-    const todayTasks = state.todos.filter(t => t.dueDate === todayStr);
-    const container = document.getElementById("today-focus-list");
-
-    if (container) {
-        container.innerHTML = "";
-        if (todayTasks.length === 0) {
-            container.innerHTML = `
-                <div class="empty-state" style="padding: 1.5rem;">
-                    <p style="color: var(--text-muted); font-size: 0.875rem;">No tasks specifically scheduled for today.</p>
-                </div>
-            `;
-        } else {
-            todayTasks.forEach(task => {
-                container.appendChild(createTodoCard(task));
-            });
-        }
-    }
+    // Dashboard widgets (Daily Mass Meter, Streaks & Milestones) are updated via updateDashboardMetrics()
 }
 
 function renderTasksView() {
@@ -1530,12 +1643,69 @@ function resetHabitTrackerToCurrentMonth() {
     renderHabitTrackerView();
 }
 
+function isHabitScheduledForDate(task, dateStr) {
+    if (!task) return false;
+    const compDates = Array.isArray(task.completedDates) ? task.completedDates : [];
+    if (compDates.includes(dateStr) || (task.dueDate === dateStr && task.completed)) {
+        return true;
+    }
+    const recurrence = task.recurrence || { frequency: "none" };
+    const freq = recurrence.frequency || "none";
+    if (recurrence.endType === "date" && recurrence.endDate && dateStr > recurrence.endDate) {
+        return false;
+    }
+    const parts = dateStr.split("-").map(Number);
+    const cellDate = new Date(parts[0], parts[1] - 1, parts[2]);
+    const dayOfWeek = cellDate.getDay(); // 0 = Sun, 1 = Mon, ..., 6 = Sat
+
+    if (freq === "daily") return true;
+    if (freq === "weekday") return dayOfWeek >= 1 && dayOfWeek <= 5;
+    if (freq === "custom_days") {
+        const custom = Array.isArray(recurrence.customDays) ? recurrence.customDays : [1, 2, 3, 4, 5];
+        return custom.includes(dayOfWeek);
+    }
+    if (freq === "weekly") {
+        if (task.dueDate) {
+            const startParts = task.dueDate.split("-").map(Number);
+            const startDate = new Date(startParts[0], startParts[1] - 1, startParts[2]);
+            return dayOfWeek === startDate.getDay();
+        }
+        return dayOfWeek === 1;
+    }
+    if (freq === "monthly") {
+        if (task.dueDate) {
+            const startParts = task.dueDate.split("-").map(Number);
+            return parts[2] === startParts[2];
+        }
+        return parts[2] === 1;
+    }
+    if (freq === "none") {
+        return task.dueDate ? task.dueDate === dateStr : true;
+    }
+    return true;
+}
+
 function toggleHabitDay(taskId, dateStr, isChecked) {
+    const todayStr = getTodayDateString();
+
+    // Lock past dates: cannot mark or unmark once date has passed
+    if (dateStr < todayStr) {
+        showToast("Past dates are permanently locked.", "error");
+        renderHabitTrackerView();
+        return;
+    }
+
+    // Lock future dates: cannot mark ahead of time
+    if (dateStr > todayStr) {
+        showToast("Future dates cannot be marked in advance.", "error");
+        renderHabitTrackerView();
+        return;
+    }
+
     const todo = state.todos.find(t => t.id == taskId);
     if (!todo) return;
 
     let completedDates = Array.isArray(todo.completedDates) ? [...todo.completedDates] : [];
-    const todayStr = getTodayDateString();
 
     if (isChecked) {
         if (!completedDates.includes(dateStr)) {
@@ -1710,10 +1880,13 @@ function renderHabitTrackerView() {
         const tdHabit = document.createElement("td");
         tdHabit.className = "ht-cell-habit ht-td-sticky-2";
 
+        const habitWrap = document.createElement("div");
+        habitWrap.className = "ht-habit-content-wrapper";
+
         const iconSpan = document.createElement("span");
         iconSpan.className = "ht-habit-icon";
         iconSpan.textContent = iconInfo.icon;
-        tdHabit.appendChild(iconSpan);
+        habitWrap.appendChild(iconSpan);
 
         const detailsDiv = document.createElement("div");
         detailsDiv.className = "ht-habit-details";
@@ -1728,7 +1901,7 @@ function renderHabitTrackerView() {
         catBadge.className = "badge badge-category ht-badge-mini";
         catBadge.textContent = task.category || "Work";
         detailsDiv.appendChild(catBadge);
-        tdHabit.appendChild(detailsDiv);
+        habitWrap.appendChild(detailsDiv);
 
         // Hover action buttons (Edit, Delete)
         const actionsDiv = document.createElement("div");
@@ -1760,7 +1933,9 @@ function renderHabitTrackerView() {
 
         actionsDiv.appendChild(editBtn);
         actionsDiv.appendChild(delBtn);
-        tdHabit.appendChild(actionsDiv);
+        habitWrap.appendChild(actionsDiv);
+
+        tdHabit.appendChild(habitWrap);
         tr.appendChild(tdHabit);
 
         // Cell 3: Goals (Sticky 3)
@@ -1779,33 +1954,135 @@ function renderHabitTrackerView() {
         monthDays.forEach(d => {
             const tdDay = document.createElement("td");
             const isToday = d.dateStr === todayStr;
-            tdDay.className = `ht-cell-day ${isToday ? 'ht-cell-today' : ''}`;
-
+            const isPast = d.dateStr < todayStr;
+            const isFuture = d.dateStr > todayStr;
             const isDone = compDates.includes(d.dateStr) || (d.dateStr === task.dueDate && task.completed);
+            const isScheduled = isHabitScheduledForDate(task, d.dateStr);
 
-            const wrap = document.createElement("label");
-            wrap.className = "ht-checkbox-wrap";
-            wrap.title = `${task.title} - ${d.dateStr}`;
+            let cellClass = `ht-cell-day ${isToday ? 'ht-cell-today' : ''}`;
+            if (isPast && !isDone && isScheduled) {
+                cellClass += " ht-cell-missed";
+            }
+            tdDay.className = cellClass;
 
-            const input = document.createElement("input");
-            input.type = "checkbox";
-            input.className = "ht-checkbox-native";
-            input.checked = isDone;
-            input.onchange = function () {
-                toggleHabitDay(task.id, d.dateStr, input.checked);
-            };
+            if (isDone) {
+                // Scenario A: Past completed (or Scenario C completed for today)
+                const wrap = document.createElement("label");
+                wrap.className = `ht-checkbox-wrap ${isPast ? 'is-locked-done' : ''}`;
+                wrap.title = `${task.title} - ${d.dateStr} (Completed${isPast ? ' - Locked' : ''})`;
 
-            const visual = document.createElement("div");
-            visual.className = "ht-checkbox-visual";
-            visual.innerHTML = `
-                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
-                    <polyline points="20 6 9 17 4 12"/>
-                </svg>
-            `;
+                const input = document.createElement("input");
+                input.type = "checkbox";
+                input.className = "ht-checkbox-native";
+                input.checked = true;
+                if (isPast) {
+                    input.disabled = true;
+                } else {
+                    input.onchange = function () {
+                        toggleHabitDay(task.id, d.dateStr, input.checked);
+                    };
+                }
 
-            wrap.appendChild(input);
-            wrap.appendChild(visual);
-            tdDay.appendChild(wrap);
+                const visual = document.createElement("div");
+                visual.className = "ht-checkbox-visual";
+                visual.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                `;
+
+                wrap.appendChild(input);
+                wrap.appendChild(visual);
+                tdDay.appendChild(wrap);
+            } else if (isPast) {
+                // Scenario B: Past Incomplete
+                if (isScheduled) {
+                    // Missed Habit -> Red X (✕) locked
+                    const wrap = document.createElement("label");
+                    wrap.className = "ht-checkbox-wrap is-locked-missed";
+                    wrap.title = `Missed: ${task.title} - ${d.dateStr} (Locked)`;
+
+                    const input = document.createElement("input");
+                    input.type = "checkbox";
+                    input.className = "ht-checkbox-native";
+                    input.disabled = true;
+
+                    const visual = document.createElement("div");
+                    visual.className = "ht-checkbox-visual is-missed";
+                    visual.innerHTML = `
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+                            <line x1="18" y1="6" x2="6" y2="18"/>
+                            <line x1="6" y1="6" x2="18" y2="18"/>
+                        </svg>
+                    `;
+
+                    wrap.appendChild(input);
+                    wrap.appendChild(visual);
+                    tdDay.appendChild(wrap);
+                } else {
+                    // Past date, not scheduled for this habit
+                    const notSched = document.createElement("div");
+                    notSched.className = "ht-not-scheduled-indicator";
+                    notSched.title = `${task.title} - Not scheduled for ${d.dateStr}`;
+                    notSched.innerHTML = `<span>—</span>`;
+                    tdDay.appendChild(notSched);
+                }
+            } else if (isToday) {
+                // Scenario C: Today Incomplete -> Enabled and functional
+                const wrap = document.createElement("label");
+                wrap.className = "ht-checkbox-wrap";
+                wrap.title = `${task.title} - Today (${d.dateStr})`;
+
+                const input = document.createElement("input");
+                input.type = "checkbox";
+                input.className = "ht-checkbox-native";
+                input.checked = false;
+                input.onchange = function () {
+                    toggleHabitDay(task.id, d.dateStr, input.checked);
+                };
+
+                const visual = document.createElement("div");
+                visual.className = "ht-checkbox-visual";
+                visual.innerHTML = `
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                    </svg>
+                `;
+
+                wrap.appendChild(input);
+                wrap.appendChild(visual);
+                tdDay.appendChild(wrap);
+            } else {
+                // Scenario D: Future dates -> Disabled
+                if (isScheduled) {
+                    const wrap = document.createElement("label");
+                    wrap.className = "ht-checkbox-wrap is-future-locked";
+                    wrap.title = `${task.title} - ${d.dateStr} (Future date)`;
+
+                    const input = document.createElement("input");
+                    input.type = "checkbox";
+                    input.className = "ht-checkbox-native";
+                    input.disabled = true;
+
+                    const visual = document.createElement("div");
+                    visual.className = "ht-checkbox-visual";
+                    visual.innerHTML = `
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round">
+                            <polyline points="20 6 9 17 4 12"/>
+                        </svg>
+                    `;
+
+                    wrap.appendChild(input);
+                    wrap.appendChild(visual);
+                    tdDay.appendChild(wrap);
+                } else {
+                    const notSched = document.createElement("div");
+                    notSched.className = "ht-not-scheduled-indicator";
+                    notSched.title = `${task.title} - Not scheduled for ${d.dateStr}`;
+                    notSched.innerHTML = `<span>—</span>`;
+                    tdDay.appendChild(notSched);
+                }
+            }
             tr.appendChild(tdDay);
         });
 
@@ -1997,11 +2274,51 @@ function sortTasks(todos, sortBy) {
     return list;
 }
 
-function applyTaskFilter(filterName) {
+function applyTaskFilter(filterName, syncNav = true) {
     state.activeFilter = filterName;
     document.querySelectorAll(".filter-pill").forEach(pill => {
         pill.classList.toggle("active", pill.getAttribute("data-filter") === filterName);
     });
+
+    if (syncNav) {
+        let activeNavKey = "tasks";
+        let routeHash = "habits";
+        if (filterName === "today") {
+            activeNavKey = "today";
+            routeHash = "today";
+        } else if (filterName === "completed") {
+            activeNavKey = "completed";
+            routeHash = "completed";
+        }
+
+        state.activeNav = activeNavKey;
+
+        // Synchronize sidebar nav item
+        document.querySelectorAll(".sidebar-nav .nav-item").forEach(btn => {
+            const itemKey = btn.getAttribute("data-view");
+            btn.classList.toggle("active", itemKey === activeNavKey);
+        });
+
+        // Update URL hash without reload
+        if (typeof window !== "undefined" && window.location && window.location.hash !== `#${routeHash}`) {
+            history.pushState({ route: routeHash }, "", `#${routeHash}`);
+        }
+
+        // Update Contextual Title
+        const titleElem = document.getElementById("page-title");
+        const subElem = document.getElementById("page-subtitle");
+        if (activeNavKey === "today") {
+            if (titleElem) titleElem.textContent = "Today's Habits";
+            if (subElem) subElem.textContent = "Focus on what needs to be executed today";
+        } else if (activeNavKey === "completed") {
+            if (titleElem) titleElem.textContent = "Completed Habits";
+            if (subElem) subElem.textContent = "Review finished habits and milestones";
+        } else {
+            if (titleElem) titleElem.textContent = "Habit Tracker";
+            if (subElem) subElem.textContent = "Daily habits, targets, and consistency";
+        }
+    }
+
     renderTasksView();
 }
 
@@ -3151,7 +3468,11 @@ function openCreateTaskModal(defaults = {}) {
     const err = document.getElementById("modal-title-error");
     if (err) err.style.display = "none";
 
-    if (modal) modal.classList.add("open");
+    if (modal) {
+        modal.classList.add("open");
+        const modalBody = modal.querySelector(".modal-body");
+        if (modalBody) modalBody.scrollTop = 0;
+    }
 }
 
 function openEditTaskModal(todo) {
@@ -3205,7 +3526,11 @@ function openEditTaskModal(todo) {
     const err = document.getElementById("modal-title-error");
     if (err) err.style.display = "none";
 
-    if (modal) modal.classList.add("open");
+    if (modal) {
+        modal.classList.add("open");
+        const modalBody = modal.querySelector(".modal-body");
+        if (modalBody) modalBody.scrollTop = 0;
+    }
 }
 
 function closeTaskModal() {
@@ -3480,10 +3805,176 @@ function triggerConfetti() {
 }
 
 // -------------------------------------------------------------
+// Theme Management (Light Mode Default, Instant Switching, Persistence)
+// -------------------------------------------------------------
+function getActiveTheme() {
+    const userEmail = getLoggedInEmail();
+    if (userEmail) {
+        try {
+            const raw = localStorage.getItem(`taskverse_prefs_${userEmail}`);
+            if (raw) {
+                const prefs = JSON.parse(raw);
+                if (prefs && prefs.theme) return prefs.theme;
+            }
+        } catch (e) {}
+    }
+    const globalTheme = localStorage.getItem("taskverse_theme");
+    if (globalTheme) return globalTheme;
+    // Light Mode is the default for new and unconfigured accounts
+    return "light";
+}
+
+function applyTheme(theme) {
+    const targetTheme = (theme === "dark") ? "dark" : "light";
+    document.documentElement.setAttribute("data-theme", targetTheme);
+
+    const lightBtn = document.getElementById("theme-btn-light");
+    const darkBtn = document.getElementById("theme-btn-dark");
+    if (lightBtn && darkBtn) {
+        if (targetTheme === "light") {
+            lightBtn.classList.add("active");
+            lightBtn.setAttribute("aria-pressed", "true");
+            darkBtn.classList.remove("active");
+            darkBtn.setAttribute("aria-pressed", "false");
+        } else {
+            darkBtn.classList.add("active");
+            darkBtn.setAttribute("aria-pressed", "true");
+            lightBtn.classList.remove("active");
+            lightBtn.setAttribute("aria-pressed", "false");
+        }
+    }
+}
+
+function setUserTheme(theme) {
+    const targetTheme = (theme === "dark") ? "dark" : "light";
+    localStorage.setItem("taskverse_theme", targetTheme);
+
+    const userEmail = getLoggedInEmail();
+    if (userEmail) {
+        const key = `taskverse_prefs_${userEmail}`;
+        try {
+            const raw = localStorage.getItem(key);
+            const prefs = raw ? JSON.parse(raw) : {};
+            prefs.theme = targetTheme;
+            localStorage.setItem(key, JSON.stringify(prefs));
+        } catch (e) {
+            console.warn("Failed saving theme in user prefs:", e);
+        }
+    }
+    applyTheme(targetTheme);
+    showToast(`Appearance updated to ${targetTheme === "light" ? "Light" : "Dark"} Mode`, "info");
+}
+
+// -------------------------------------------------------------
+// Account Management: Permanent Deletion Flow
+// -------------------------------------------------------------
+function openDeleteAccountModal() {
+    const modal = document.getElementById("delete-account-modal");
+    const passwordInput = document.getElementById("delete-account-password");
+    const errorMsg = document.getElementById("delete-account-error");
+    if (passwordInput) passwordInput.value = "";
+    if (errorMsg) {
+        errorMsg.style.display = "none";
+        errorMsg.textContent = "";
+    }
+    if (modal) {
+        modal.classList.add("active");
+        if (passwordInput) setTimeout(() => passwordInput.focus(), 80);
+    }
+}
+
+function closeDeleteAccountModal() {
+    const modal = document.getElementById("delete-account-modal");
+    if (modal) modal.classList.remove("active");
+}
+
+async function submitDeleteAccount() {
+    const passwordInput = document.getElementById("delete-account-password");
+    const errorMsg = document.getElementById("delete-account-error");
+    const btn = document.getElementById("btn-confirm-delete-account");
+    const password = passwordInput ? passwordInput.value.trim() : "";
+
+    if (!password) {
+        if (errorMsg) {
+            errorMsg.textContent = "Please enter your password to confirm deletion.";
+            errorMsg.style.display = "block";
+        }
+        return;
+    }
+
+    const token = getToken();
+    if (!token) {
+        showToast("Session expired. Please sign in again.", "error");
+        setTimeout(() => { window.location.href = "login.html"; }, 800);
+        return;
+    }
+
+    if (btn) {
+        btn.disabled = true;
+        btn.textContent = "Permanently Deleting...";
+    }
+    if (errorMsg) errorMsg.style.display = "none";
+
+    try {
+        const serverUrl = getServerUrl();
+        const response = await fetch(`${serverUrl}/auth/delete-account`, {
+            method: "POST",
+            headers: {
+                "Content-Type": "application/json",
+                "Authorization": `Bearer ${token}`
+            },
+            body: JSON.stringify({ password })
+        });
+
+        if (response.ok) {
+            closeDeleteAccountModal();
+            const email = getLoggedInEmail();
+            localStorage.removeItem("token");
+            localStorage.removeItem("userEmail");
+            if (email) {
+                localStorage.removeItem(`taskverse_prefs_${email}`);
+            }
+            showToast("Account deleted successfully.", "success");
+            setTimeout(() => {
+                window.location.href = "login.html";
+            }, 1000);
+        } else {
+            let errorText = "Failed to delete account.";
+            try {
+                const resJson = await response.json();
+                if (resJson && resJson.message) errorText = resJson.message;
+            } catch (e) {
+                const rawText = await response.text();
+                if (rawText) errorText = rawText;
+            }
+            if (errorMsg) {
+                errorMsg.textContent = errorText;
+                errorMsg.style.display = "block";
+            }
+            showToast(errorText, "error");
+        }
+    } catch (err) {
+        console.error("Delete account network error:", err);
+        if (errorMsg) {
+            errorMsg.textContent = "Network error. Please verify backend connection.";
+            errorMsg.style.display = "block";
+        }
+        showToast("Network error during account deletion.", "error");
+    } finally {
+        if (btn) {
+            btn.disabled = false;
+            btn.textContent = "Permanently Delete";
+        }
+    }
+}
+
+// -------------------------------------------------------------
 // Preferences Local Storage Cache
 // -------------------------------------------------------------
 function loadUserPreferences() {
-    const key = `taskverse_prefs_${getLoggedInEmail()}`;
+    const email = getLoggedInEmail();
+    const key = `taskverse_prefs_${email}`;
+    let loadedTheme = null;
     try {
         const raw = localStorage.getItem(key);
         if (raw) {
@@ -3494,19 +3985,27 @@ function loadUserPreferences() {
                 const toggle = document.getElementById("settings-sound-toggle");
                 if (toggle) toggle.checked = state.soundEnabled;
             }
+            if (prefs.theme) {
+                loadedTheme = prefs.theme;
+            }
         }
     } catch (e) {
         console.warn("Failed to load user preferences:", e);
     }
+    applyTheme(loadedTheme || getActiveTheme());
     updateCategorySelectOptions();
 }
 
 function saveUserPreferences() {
     const key = `taskverse_prefs_${getLoggedInEmail()}`;
     try {
+        const raw = localStorage.getItem(key);
+        const existing = raw ? JSON.parse(raw) : {};
         localStorage.setItem(key, JSON.stringify({
+            ...existing,
             customCategories: state.customCategories,
-            soundEnabled: state.soundEnabled
+            soundEnabled: state.soundEnabled,
+            theme: getActiveTheme()
         }));
     } catch (e) {
         console.warn("Failed to save user preferences:", e);
@@ -3514,9 +4013,50 @@ function saveUserPreferences() {
 }
 
 // -------------------------------------------------------------
+// Router Synchronization (Direct URL, Refresh, Browser Back/Forward)
+// -------------------------------------------------------------
+function syncRouteFromLocation() {
+    if (typeof window === "undefined" || !window.location) return;
+    const hash = (window.location.hash || "").replace(/^#\/?/, "").toLowerCase().trim();
+    if (!hash || hash === "dashboard") {
+        switchView("dashboard", null, false);
+    } else if (hash === "today") {
+        switchView("today", null, false);
+    } else if (hash === "completed") {
+        switchView("completed", null, false);
+    } else if (hash === "categories") {
+        switchView("categories", null, false);
+    } else if (hash === "settings") {
+        switchView("settings", null, false);
+    } else if (hash === "habits" || hash === "tasks") {
+        switchView("tasks", "all", false);
+    } else {
+        switchView("dashboard", null, false);
+    }
+}
+
+if (typeof window !== "undefined") {
+    window.addEventListener("popstate", syncRouteFromLocation);
+    window.addEventListener("hashchange", syncRouteFromLocation);
+}
+
+// -------------------------------------------------------------
 // Global Event Listeners & Initialization
 // -------------------------------------------------------------
 document.addEventListener("DOMContentLoaded", function () {
+    // Synchronize current theme on load
+    applyTheme(getActiveTheme());
+
+    // Check if on login or register page while already authenticated
+    const onAuthPage = document.getElementById("login-form") || document.getElementById("register-form");
+    if (onAuthPage) {
+        const token = getToken();
+        if (token && !isTokenExpired(token)) {
+            window.location.href = "todos.html";
+            return;
+        }
+    }
+
     // Pre-warm backend (helps wake up free-tier cold instances early)
     try {
         fetch(`${getServerUrl()}/auth/ping`, { method: "GET", mode: "cors", cache: "no-store" }).catch(() => {});
@@ -3531,6 +4071,7 @@ document.addEventListener("DOMContentLoaded", function () {
     // Check if on dashboard / todos page
     if (document.getElementById("todo-list") || document.getElementById("view-dashboard")) {
         loadTodos();
+        syncRouteFromLocation();
     }
 
     // Keyboard Shortcuts
@@ -3547,6 +4088,7 @@ document.addEventListener("DOMContentLoaded", function () {
             closeCategoryModal();
             closeConfirmModal(false);
             closeSeriesModal();
+            closeDeleteAccountModal();
             const popover = document.getElementById("notification-popover");
             if (popover) popover.classList.remove("open");
         }

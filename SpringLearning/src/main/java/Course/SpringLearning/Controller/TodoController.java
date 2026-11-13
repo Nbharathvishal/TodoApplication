@@ -29,7 +29,8 @@ public class TodoController {
 
     private User getAuthenticatedUser() {
         String email = SecurityContextHolder.getContext().getAuthentication().getName();
-        return userRepository.findByEmail(email)
+        return userRepository.findByEmailIgnoreCase(email != null ? email.trim() : "")
+                .or(() -> userRepository.findByEmail(email))
                 .orElseThrow(() -> new org.springframework.security.core.userdetails.UsernameNotFoundException("User not found: " + email));
     }
 
