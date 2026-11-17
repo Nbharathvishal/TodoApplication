@@ -124,9 +124,46 @@ public class AuthController {
         }
 
         String tokenEmail = (user.getEmail() != null && !user.getEmail().isBlank()) ? user.getEmail() : normalizedEmail;
-        String token = jwtUtil.generateToken(tokenEmail);
+        String token = jwtUtil.generateAccessToken(tokenEmail);
+        String refreshToken = jwtUtil.generateRefreshToken(tokenEmail);
 
-        return ResponseEntity.ok(Map.of("token", token));
+        return ResponseEntity.ok(Map.of(
+                "token", token,
+                "refreshToken", refreshToken
+        ));
+    }
+
+    @PostMapping("/refresh")
+    public ResponseEntity<?> refreshToken(@RequestBody(required = false) Map<String, String> body) {
+        String refreshToken = body != null ? body.get("refreshToken") : null;
+        if (refreshToken == null || refreshToken.trim().isEmpty()) {
+            return new ResponseEntity<>(Map.of("error", "Refresh token is required"), HttpStatus.BAD_REQUEST);
+        }
+
+        if (!jwtUtil.validateRefreshToken(refreshToken)) {
+            return new ResponseEntity<>(Map.of("error", "Invalid or expired refresh token"), HttpStatus.UNAUTHORIZED);
+        }
+
+        String email = jwtUtil.extractEmail(refreshToken);
+        if (email == null || email.isBlank()) {
+            return new ResponseEntity<>(Map.of("error", "Invalid token claims"), HttpStatus.UNAUTHORIZED);
+        }
+
+        var userOpt = findUserByEmailNormalized(email);
+        if (userOpt.isEmpty()) {
+            return new ResponseEntity<>(Map.of("error", "User account not found"), HttpStatus.UNAUTHORIZED);
+        }
+
+        User user = userOpt.get();
+        String canonicalEmail = (user.getEmail() != null && !user.getEmail().isBlank()) ? user.getEmail() : email;
+
+        String newAccessToken = jwtUtil.generateAccessToken(canonicalEmail);
+        String newRefreshToken = jwtUtil.generateRefreshToken(canonicalEmail);
+
+        return ResponseEntity.ok(Map.of(
+                "token", newAccessToken,
+                "refreshToken", newRefreshToken
+        ));
     }
 
     @PostMapping("/delete-account")

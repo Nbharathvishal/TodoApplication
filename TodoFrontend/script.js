@@ -69,6 +69,34 @@ function updateServerSelectorUI() {
     }
 }
 
+let isRefreshingToken = false;
+let refreshSubscribers = [];
+let sessionExpiredRedirectTriggered = false;
+
+function subscribeTokenRefresh(cb) {
+    refreshSubscribers.push(cb);
+}
+
+function onRefreshed(token) {
+    refreshSubscribers.forEach(cb => cb(token));
+    refreshSubscribers = [];
+}
+
+function onRefreshFailed(err) {
+    refreshSubscribers.forEach(cb => cb(null, err));
+    refreshSubscribers = [];
+}
+
+function handleSessionExpired(customMessage) {
+    if (sessionExpiredRedirectTriggered) return;
+    sessionExpiredRedirectTriggered = true;
+    clearAuthTokens();
+    showToast(customMessage || "Session expired. Please sign in again.", "error");
+    setTimeout(() => {
+        window.location.href = "login.html";
+    }, 1000);
+}
+
 function handleFetchError(error, contextMsg = "Request failed") {
     console.error("API Fetch Error:", error);
     const current = getServerUrl();
@@ -76,17 +104,13 @@ function handleFetchError(error, contextMsg = "Request failed") {
 
     // 401 Unauthorized: Credentials invalid or session genuinely expired -> logout & redirect
     if (error && (error.status === 401 || (error.message && (error.message.includes("401") || error.message.includes("Session expired"))))) {
-        localStorage.removeItem("token");
-        showToast("Session expired. Please sign in again.", "error");
-        setTimeout(() => {
-            window.location.href = "login.html";
-        }, 1200);
+        handleSessionExpired("Session expired. Please sign in again.");
         return;
     }
 
     // 403 Forbidden: User authenticated but lacks permission -> show permission error, DO NOT log out
     if (error && (error.status === 403 || (error.message && error.message.includes("403")))) {
-        showToast(error.userMessage || "Access denied: You do not have permission to modify this task.", "error");
+        showToast(error.userMessage || error.message || "Access denied: You do not have permission to modify this task.", "error");
         return;
     }
 
@@ -98,7 +122,7 @@ function handleFetchError(error, contextMsg = "Request failed") {
         return;
     }
 
-    if (error.message === "Failed to fetch" || error.name === "TypeError") {
+    if (error && (error.message === "Failed to fetch" || error.name === "TypeError")) {
         if (isLocalTarget) {
             showToast(
                 `Local backend connection refused at ${current}. Please ensure Spring Boot is running on port 8080.`,
@@ -144,24 +168,137 @@ if (typeof globalThis !== "undefined") {
 }
 
 // -------------------------------------------------------------
-// Authentication Utilities (Preserved)
+// Authentication Utilities & Token Management
 // -------------------------------------------------------------
 function getToken() {
     return localStorage.getItem("token");
 }
 
-function isTokenExpired(token) {
+function getRefreshToken() {
+    return localStorage.getItem("refreshToken");
+}
+
+function setTokens(accessToken, refreshToken) {
+    if (accessToken) {
+        localStorage.setItem("token", accessToken);
+    }
+    if (refreshToken) {
+        localStorage.setItem("refreshToken", refreshToken);
+    }
+}
+
+function clearAuthTokens() {
+    localStorage.removeItem("token");
+    localStorage.removeItem("refreshToken");
+}
+
+function isTokenExpired(token, bufferSeconds = 15) {
     if (!token) return true;
     try {
         const parts = token.split(".");
         if (parts.length !== 3) return true;
         const payload = JSON.parse(atob(parts[1].replace(/-/g, "+").replace(/_/g, "/")));
         if (!payload.exp) return false;
-        // Expired if current time is past exp (with a 5-second buffer)
-        return Date.now() >= (payload.exp * 1000) - 5000;
+        // Expired if current time is within bufferSeconds of exp
+        return Date.now() >= (payload.exp * 1000) - (bufferSeconds * 1000);
     } catch (e) {
         return true;
     }
+}
+
+async function refreshAccessToken() {
+    const refreshToken = getRefreshToken();
+    if (!refreshToken) {
+        throw new Error("No refresh token available");
+    }
+
+    if (isRefreshingToken) {
+        return new Promise((resolve, reject) => {
+            subscribeTokenRefresh((token, err) => {
+                if (err) reject(err);
+                else resolve(token);
+            });
+        });
+    }
+
+    isRefreshingToken = true;
+
+    try {
+        const res = await fetch(`${getServerUrl()}/auth/refresh`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refreshToken })
+        });
+
+        if (!res.ok) {
+            const err = new Error("Session expired (refresh failed)");
+            err.status = 401;
+            onRefreshFailed(err);
+            throw err;
+        }
+
+        const data = await res.json();
+        if (data.token) {
+            setTokens(data.token, data.refreshToken);
+            onRefreshed(data.token);
+            return data.token;
+        }
+        throw new Error("Invalid refresh response format");
+    } catch (err) {
+        onRefreshFailed(err);
+        throw err;
+    } finally {
+        isRefreshingToken = false;
+    }
+}
+
+// Universal Authenticated API Client with Transparent Token Refresh & Request Retry
+async function apiFetch(url, options = {}) {
+    const opts = { ...options };
+    opts.headers = { ...(opts.headers || {}) };
+
+    let token = getToken();
+
+    // Proactive refresh: if access token expires in less than 30s, and we have a refresh token, refresh before requesting
+    if (token && isTokenExpired(token, 30) && getRefreshToken()) {
+        try {
+            token = await refreshAccessToken();
+        } catch (e) {
+            console.warn("Proactive token refresh attempt failed:", e);
+        }
+    }
+
+    if (token && !opts.headers["Authorization"]) {
+        opts.headers["Authorization"] = `Bearer ${token}`;
+    }
+
+    let response = await fetch(url, opts);
+
+    // 401 Unauthorized: Attempt transparent refresh using refresh token and retry request
+    if (response.status === 401 && getRefreshToken()) {
+        try {
+            const newToken = await refreshAccessToken();
+            const retryOpts = { ...options };
+            retryOpts.headers = { ...(retryOpts.headers || {}) };
+            retryOpts.headers["Authorization"] = `Bearer ${newToken}`;
+            response = await fetch(url, retryOpts);
+        } catch (refreshErr) {
+            console.error("Transparent token refresh failed:", refreshErr);
+            handleSessionExpired("Session expired. Please sign in again.");
+            const err = new Error("Session expired (HTTP 401)");
+            err.status = 401;
+            throw err;
+        }
+    }
+
+    if (response.status === 401) {
+        handleSessionExpired("Session expired. Please sign in again.");
+        const err = new Error("Session expired (HTTP 401)");
+        err.status = 401;
+        throw err;
+    }
+
+    return response;
 }
 
 function getLoggedInEmail() {
@@ -169,12 +306,12 @@ function getLoggedInEmail() {
 }
 
 function logout() {
-    localStorage.removeItem("token");
+    clearAuthTokens();
     localStorage.removeItem("userEmail");
     showToast("Signed out successfully", "info");
     setTimeout(() => {
         window.location.href = "login.html";
-    }, 400);
+    }, 600);
 }
 
 // Login logic (Preserved & Enhanced with Toast & Smart Error Handling)
@@ -231,7 +368,7 @@ function login() {
         return response.json();
     })
     .then(data => {
-        localStorage.setItem("token", data.token);
+        setTokens(data.token, data.refreshToken);
         localStorage.setItem("userEmail", email);
         showToast("Welcome back! Redirecting...", "success");
         setTimeout(() => {
@@ -611,9 +748,6 @@ function calculateSeriesDates(startDateStr, recurrence, maxOccurrences = 60, hor
 }
 
 async function updateRecurringSeries(seriesId, updatedFields) {
-    const currentToken = getToken();
-    if (!currentToken) return;
-
     const matchingTasks = state.todos.filter(t => t.recurrence && t.recurrence.seriesId === seriesId);
     if (matchingTasks.length === 0) return;
 
@@ -635,11 +769,10 @@ async function updateRecurringSeries(seriesId, updatedFields) {
             }
         });
 
-        return fetch(`${getServerUrl()}/api/todo`, {
+        return apiFetch(`${getServerUrl()}/api/todo`, {
             method: "PUT",
             headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${currentToken}`
+                "Content-Type": "application/json"
             },
             body: JSON.stringify(payload)
         });
@@ -651,7 +784,9 @@ async function updateRecurringSeries(seriesId, updatedFields) {
         showToast("Entire recurring series updated!", "success");
         loadTodos();
     } catch (err) {
-        handleFetchError(err, "Failed to update entire series");
+        if (err.status !== 401 && err.status !== 403) {
+            handleFetchError(err, "Failed to update entire series");
+        }
     } finally {
         state.isSubmittingTask = false;
         const saveBtn = document.getElementById("modal-task-save-btn");
@@ -663,9 +798,6 @@ async function updateRecurringSeries(seriesId, updatedFields) {
 }
 
 async function deleteRecurringSeries(seriesId) {
-    const currentToken = getToken();
-    if (!currentToken) return;
-
     const matchingTasks = state.todos.filter(t => t.recurrence && t.recurrence.seriesId === seriesId);
     if (matchingTasks.length === 0) return;
 
@@ -673,11 +805,8 @@ async function deleteRecurringSeries(seriesId) {
     showToast(`Deleting ${matchingTasks.length} missions in series...`, "info");
 
     const deletePromises = matchingTasks.map(t => {
-        return fetch(`${getServerUrl()}/api/todo/${t.id}`, {
-            method: "DELETE",
-            headers: {
-                Authorization: `Bearer ${currentToken}`
-            }
+        return apiFetch(`${getServerUrl()}/api/todo/${t.id}`, {
+            method: "DELETE"
         });
     });
 
@@ -686,14 +815,13 @@ async function deleteRecurringSeries(seriesId) {
         showToast("Recurring series deleted.", "info");
         loadTodos();
     } catch (err) {
-        handleFetchError(err, "Failed to delete recurring series");
+        if (err.status !== 401 && err.status !== 403) {
+            handleFetchError(err, "Failed to delete recurring series");
+        }
     }
 }
 
 async function togglePauseSeries(seriesId, shouldPause) {
-    const currentToken = getToken();
-    if (!currentToken) return;
-
     const matchingTasks = state.todos.filter(t => t.recurrence && t.recurrence.seriesId === seriesId);
     if (matchingTasks.length === 0) return;
 
@@ -715,11 +843,10 @@ async function togglePauseSeries(seriesId, shouldPause) {
             }
         });
 
-        return fetch(`${getServerUrl()}/api/todo`, {
+        return apiFetch(`${getServerUrl()}/api/todo`, {
             method: "PUT",
             headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${currentToken}`
+                "Content-Type": "application/json"
             },
             body: JSON.stringify(payload)
         });
@@ -730,7 +857,9 @@ async function togglePauseSeries(seriesId, shouldPause) {
         showToast(`Series ${shouldPause ? "paused ⏸️" : "resumed 🔁"}!`, "success");
         loadTodos();
     } catch (err) {
-        handleFetchError(err, "Failed to update series state");
+        if (err.status !== 401 && err.status !== 403) {
+            handleFetchError(err, "Failed to update series state");
+        }
     }
 }
 
@@ -779,32 +908,11 @@ function closeSeriesModal() {
 
 function deleteSingleOccurrence(id) {
     closeSeriesModal();
-    const currentToken = getToken();
-    if (!currentToken || isTokenExpired(currentToken)) {
-        localStorage.removeItem("token");
-        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
-        setTimeout(() => {
-            window.location.href = "login.html";
-        }, 800);
-        return;
-    }
-
-    fetch(`${getServerUrl()}/api/todo/${id}`, {
-        method: "DELETE",
-        headers: {
-            Authorization: `Bearer ${currentToken}`
-        }
+    apiFetch(`${getServerUrl()}/api/todo/${id}`, {
+        method: "DELETE"
     })
     .then(async response => {
         if (!response.ok) {
-            if (response.status === 401 || response.status === 403) {
-                localStorage.removeItem("token");
-                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
-                setTimeout(() => {
-                    window.location.href = "login.html";
-                }, 1000);
-                throw new Error("Session expired or access denied (HTTP 403)");
-            }
             const errorText = await response.text();
             throw new Error(errorText || `Failed to delete occurrence (HTTP ${response.status})`);
         }
@@ -812,7 +920,9 @@ function deleteSingleOccurrence(id) {
         loadTodos();
     })
     .catch(error => {
-        handleFetchError(error, "Failed to delete occurrence");
+        if (error.status !== 401 && error.status !== 403) {
+            handleFetchError(error, "Failed to delete occurrence");
+        }
     });
 }
 
@@ -820,9 +930,9 @@ function deleteSingleOccurrence(id) {
 // Data Loading & Persistence (CRUD)
 // -------------------------------------------------------------
 function loadTodos() {
-    const currentToken = getToken();
-    if (!currentToken || isTokenExpired(currentToken)) {
-        localStorage.removeItem("token");
+    const token = getToken();
+    const refreshToken = getRefreshToken();
+    if (!token && !refreshToken) {
         window.location.href = "login.html";
         return;
     }
@@ -840,24 +950,12 @@ function loadTodos() {
     // Load custom categories & preferences from localStorage
     loadUserPreferences();
 
-    fetch(`${getServerUrl()}/api/todo`, {
-        method: "GET",
-        headers: {
-            Authorization: `Bearer ${currentToken}`
-        }
+    apiFetch(`${getServerUrl()}/api/todo`, {
+        method: "GET"
     })
-    .then(response => {
+    .then(async response => {
         if (!response.ok) {
-            if (response.status === 401) {
-                localStorage.removeItem("token");
-                throw new Error("Session expired. Please log in again.");
-            }
-            if (response.status === 403) {
-                const err = new Error("Access denied: You do not have permission to view these tasks.");
-                err.status = 403;
-                throw err;
-            }
-            throw new Error("Failed to load Todos");
+            throw new Error(`Failed to load Todos (HTTP ${response.status})`);
         }
         return response.json();
     })
@@ -870,29 +968,23 @@ function loadTodos() {
         updateNotifications();
     })
     .catch(error => {
-        handleFetchError(error, "Failed to load Todos");
-        if (error.message && error.message.includes("Session expired")) {
-            setTimeout(() => {
-                window.location.href = "login.html";
-            }, 1000);
+        if (error.status !== 401 && error.status !== 403) {
+            handleFetchError(error, "Failed to load Todos");
         }
     });
 }
 
 async function addTodo(taskData = {}) {
-    const currentToken = getToken();
-    if (!currentToken || isTokenExpired(currentToken)) {
+    const token = getToken();
+    const refreshToken = getRefreshToken();
+    if (!token && !refreshToken) {
         state.isSubmittingTask = false;
         const saveBtn = document.getElementById("modal-task-save-btn");
         if (saveBtn) {
             saveBtn.disabled = false;
             saveBtn.textContent = "Save Mission";
         }
-        localStorage.removeItem("token");
-        showToast("Session expired or missing. Please sign in again.", "error");
-        setTimeout(() => {
-            window.location.href = "login.html";
-        }, 800);
+        handleSessionExpired("Session expired or missing. Please sign in again.");
         return;
     }
 
@@ -978,11 +1070,10 @@ async function addTodo(taskData = {}) {
         });
 
         // Exactly one create request per click
-        const res = await fetch(`${getServerUrl()}/api/todo/create`, {
+        const res = await apiFetch(`${getServerUrl()}/api/todo/create`, {
             method: "POST",
             headers: {
-                "Content-Type": "application/json",
-                Authorization: `Bearer ${currentToken}`
+                "Content-Type": "application/json"
             },
             body: JSON.stringify(payload),
             signal: abortCtrl.signal
@@ -993,18 +1084,6 @@ async function addTodo(taskData = {}) {
         clearTimeout(timeoutTimer);
 
         if (!res.ok) {
-            if (res.status === 401) {
-                localStorage.removeItem("token");
-                showToast("Session expired. Please sign in again.", "error");
-                setTimeout(() => {
-                    window.location.href = "login.html";
-                }, 1000);
-                return;
-            }
-            if (res.status === 403) {
-                showToast("Access denied: You do not have permission to create this task.", "error");
-                return;
-            }
             const errorMsg = await res.text();
             throw new Error(errorMsg || `Failed to create mission (HTTP ${res.status})`);
         }
@@ -1038,18 +1117,7 @@ async function addTodo(taskData = {}) {
     }
 }
 
-function updateTodoStatus(todo, onRevert) {
-    const currentToken = getToken();
-    if (!currentToken || isTokenExpired(currentToken)) {
-        if (typeof onRevert === "function") onRevert();
-        localStorage.removeItem("token");
-        showToast("Session expired. Please log in again.", "error");
-        setTimeout(() => {
-            window.location.href = "login.html";
-        }, 800);
-        return;
-    }
-
+async function updateTodoStatus(todo, onRevert) {
     const payload = serializeTodoForBackend({
         id: todo.id,
         title: todo.title,
@@ -1063,91 +1131,65 @@ function updateTodoStatus(todo, onRevert) {
         recurrence: todo.recurrence
     });
 
-    fetch(`${getServerUrl()}/api/todo`, {
-        method: "PUT",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${currentToken}`
-        },
-        body: JSON.stringify(payload)
-    })
-    .then(async response => {
-        if (!response.ok) {
-            // Self-heal: If /api/todo returned 404 (task id not found under current user in DB),
-            // recreate under authenticated user so completion state & metadata are preserved seamlessly
-            if (response.status === 404) {
-                try {
-                    const healPayload = { ...payload };
-                    delete healPayload.id;
-                    const createRes = await fetch(`${getServerUrl()}/api/todo/create`, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            Authorization: `Bearer ${currentToken}`
-                        },
-                        body: JSON.stringify(healPayload)
-                    });
-                    if (createRes.status === 401) {
-                        localStorage.removeItem("token");
-                        if (typeof onRevert === "function") onRevert();
-                        showToast("Session expired. Please log in again.", "error");
-                        setTimeout(() => {
-                            window.location.href = "login.html";
-                        }, 800);
-                        return;
+    try {
+        let response = await apiFetch(`${getServerUrl()}/api/todo`, {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        // Self-heal: If /api/todo returned 404 (task id not found under current user in DB),
+        // recreate under authenticated user so completion state & metadata are preserved seamlessly
+        if (response.status === 404) {
+            console.info("Task ID not found on server during update; self-healing by creating task under authenticated user...");
+            const healPayload = { ...payload };
+            delete healPayload.id;
+
+            const createRes = await apiFetch(`${getServerUrl()}/api/todo/create`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(healPayload)
+            });
+
+            if (createRes.ok) {
+                const newlyCreated = await createRes.json();
+                const oldId = payload.id;
+                if (oldId !== undefined && oldId !== null) {
+                    const found = state.todos.find(t => t.id == oldId);
+                    if (found) {
+                        found.id = newlyCreated.id;
                     }
-                    if (createRes.status === 403) {
-                        if (typeof onRevert === "function") onRevert();
-                        showToast("Access denied: You do not have permission to create this task.", "error");
-                        return;
-                    }
-                    if (createRes.ok) {
-                        const newlyCreated = await createRes.json();
-                        const oldId = payload.id;
-                        if (oldId) {
-                            const found = state.todos.find(t => t.id == oldId);
-                            if (found) {
-                                found.id = newlyCreated.id;
-                            }
-                        }
-                        return newlyCreated;
-                    } else {
-                        if (typeof onRevert === "function") onRevert();
-                    }
-                } catch (healErr) {
-                    console.warn("Self-healing recreation failed:", healErr);
-                    if (typeof onRevert === "function") onRevert();
                 }
-            }
-            if (response.status === 401) {
-                localStorage.removeItem("token");
+                if (newlyCreated.id) {
+                    try {
+                        localStorage.setItem("taskverse_habit_dates_" + newlyCreated.id, JSON.stringify(payload.completedDates || []));
+                    } catch (e) {}
+                }
+                const msg = todo.completed ? "Mission completed! 🔥" : "Mission reopened";
+                showToast(msg, "info");
+                updateAnalytics();
+                renderMassMeterAndAchievements();
+                updateStreaks();
+                return newlyCreated;
+            } else {
                 if (typeof onRevert === "function") onRevert();
-                showToast("Session expired. Please sign in again.", "error");
-                setTimeout(() => {
-                    window.location.href = "login.html";
-                }, 1000);
-                const err = new Error("Session expired (HTTP 401)");
-                err.status = 401;
-                throw err;
+                return;
             }
-            if (response.status === 403) {
-                if (typeof onRevert === "function") onRevert();
-                showToast("Access denied: You do not have permission to modify this task.", "error");
-                const err = new Error("Access denied (HTTP 403)");
-                err.status = 403;
-                throw err;
-            }
-            const errorText = await response.text();
-            const err = new Error(errorText || `Failed to update task (HTTP ${response.status})`);
-            err.status = response.status;
-            throw err;
         }
-        return response.json();
-    })
-    .then(updated => {
+
+        if (!response.ok) {
+            if (typeof onRevert === "function") onRevert();
+            const errorText = await response.text();
+            throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
+        }
+
+        const updated = await response.json();
         const msg = todo.completed ? "Mission completed! 🔥" : "Mission reopened";
         showToast(msg, "info");
-        // Update local state without full reload so UI stays snappy
         const idx = state.todos.findIndex(t => t.id == todo.id);
         if (idx !== -1 && updated) {
             state.todos[idx] = parseTodoMetadata(updated);
@@ -1155,24 +1197,16 @@ function updateTodoStatus(todo, onRevert) {
         updateAnalytics();
         renderMassMeterAndAchievements();
         updateStreaks();
-    })
-    .catch(error => {
-        if (typeof onRevert === "function") onRevert();
-        handleFetchError(error, "Failed to update task status");
-    });
+        return updated;
+    } catch (error) {
+        if (error.status !== 401 && error.status !== 403) {
+            if (typeof onRevert === "function") onRevert();
+            handleFetchError(error, "Failed to update task status");
+        }
+    }
 }
 
-function updateTodoDetails(taskData) {
-    const currentToken = getToken();
-    if (!currentToken || isTokenExpired(currentToken)) {
-        localStorage.removeItem("token");
-        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
-        setTimeout(() => {
-            window.location.href = "login.html";
-        }, 800);
-        return;
-    }
-
+async function updateTodoDetails(taskData) {
     const payload = serializeTodoForBackend(taskData);
 
     const saveBtn = document.getElementById("modal-task-save-btn");
@@ -1182,121 +1216,64 @@ function updateTodoDetails(taskData) {
     }
     state.isSubmittingTask = true;
 
-    fetch(`${getServerUrl()}/api/todo`, {
-        method: "PUT",
-        headers: {
-            "Content-Type": "application/json",
-            Authorization: `Bearer ${currentToken}`
-        },
-        body: JSON.stringify(payload)
-    })
-    .then(async response => {
+    try {
+        let response = await apiFetch(`${getServerUrl()}/api/todo`, {
+            method: "PUT",
+            headers: {
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify(payload)
+        });
+
+        if (response.status === 404) {
+            console.info("Task ID not found during details update; recreating...");
+            const healPayload = { ...payload };
+            delete healPayload.id;
+
+            const createRes = await apiFetch(`${getServerUrl()}/api/todo/create`, {
+                method: "POST",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(healPayload)
+            });
+
+            if (createRes.ok) {
+                closeTaskModal();
+                showToast("Mission updated successfully!", "success");
+                loadTodos();
+                return;
+            }
+        }
+
         if (!response.ok) {
-            if (response.status === 404) {
-                try {
-                    const healPayload = { ...payload };
-                    delete healPayload.id;
-                    const createRes = await fetch(`${getServerUrl()}/api/todo/create`, {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            Authorization: `Bearer ${currentToken}`
-                        },
-                        body: JSON.stringify(healPayload)
-                    });
-                    if (createRes.status === 401) {
-                        localStorage.removeItem("token");
-                        showToast("Session expired. Please sign in again.", "error");
-                        setTimeout(() => {
-                            window.location.href = "login.html";
-                        }, 800);
-                        return;
-                    }
-                    if (createRes.status === 403) {
-                        showToast("Access denied: You do not have permission to create this task.", "error");
-                        return;
-                    }
-                    if (createRes.ok) {
-                        return createRes.json();
-                    }
-                } catch (healErr) {
-                    console.warn("Self-healing recreation failed:", healErr);
-                }
-            }
-            if (response.status === 401) {
-                localStorage.removeItem("token");
-                showToast("Session expired. Please sign in again.", "error");
-                setTimeout(() => {
-                    window.location.href = "login.html";
-                }, 1000);
-                const err = new Error("Session expired (HTTP 401)");
-                err.status = 401;
-                throw err;
-            }
-            if (response.status === 403) {
-                showToast("Access denied: You do not have permission to edit this task.", "error");
-                const err = new Error("Access denied (HTTP 403)");
-                err.status = 403;
-                throw err;
-            }
             const errorText = await response.text();
             throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
         }
-        return response.json();
-    })
-    .then(updated => {
+
         closeTaskModal();
         showToast("Mission updated successfully!", "success");
         loadTodos();
-    })
-    .catch(error => {
-        handleFetchError(error, "Failed to update task details");
-    })
-    .finally(() => {
+    } catch (error) {
+        if (error.status !== 401 && error.status !== 403) {
+            handleFetchError(error, "Failed to update task details");
+        }
+    } finally {
         state.isSubmittingTask = false;
         if (saveBtn) {
             saveBtn.disabled = false;
             saveBtn.textContent = "Save Mission";
         }
-    });
+    }
 }
 
 function deleteTodo(id) {
     showConfirmModal("Are you sure you want to delete this mission? This cannot be undone.", () => {
-        const currentToken = getToken();
-        if (!currentToken || isTokenExpired(currentToken)) {
-            localStorage.removeItem("token");
-            showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
-            setTimeout(() => {
-                window.location.href = "login.html";
-            }, 800);
-            return;
-        }
-
-        fetch(`${getServerUrl()}/api/todo/${id}`, {
-            method: "DELETE",
-            headers: {
-                Authorization: `Bearer ${currentToken}`
-            }
+        apiFetch(`${getServerUrl()}/api/todo/${id}`, {
+            method: "DELETE"
         })
         .then(async response => {
             if (!response.ok) {
-                if (response.status === 401) {
-                    localStorage.removeItem("token");
-                    showToast("Session expired. Please sign in again.", "error");
-                    setTimeout(() => {
-                        window.location.href = "login.html";
-                    }, 1000);
-                    const err = new Error("Session expired (HTTP 401)");
-                    err.status = 401;
-                    throw err;
-                }
-                if (response.status === 403) {
-                    showToast("Access denied: You do not have permission to delete this task.", "error");
-                    const err = new Error("Access denied (HTTP 403)");
-                    err.status = 403;
-                    throw err;
-                }
                 const errorText = await response.text();
                 throw new Error(errorText || `Failed to delete mission (HTTP ${response.status})`);
             }
@@ -1304,7 +1281,9 @@ function deleteTodo(id) {
             loadTodos();
         })
         .catch(error => {
-            handleFetchError(error, "Failed to delete task");
+            if (error.status !== 401 && error.status !== 403) {
+                handleFetchError(error, "Failed to delete task");
+            }
         });
     });
 }
@@ -2235,13 +2214,10 @@ async function loadStarterHabitTemplates() {
         { title: "Track Expenses 💵", goal: 30, category: "Work", priority: "Medium" }
     ];
 
-    const currentToken = getToken();
-    if (!currentToken || isTokenExpired(currentToken)) {
-        localStorage.removeItem("token");
-        showToast("Session expired or missing. Please sign in again.", "error");
-        setTimeout(() => {
-            window.location.href = "login.html";
-        }, 800);
+    const token = getToken();
+    const refreshToken = getRefreshToken();
+    if (!token && !refreshToken) {
+        handleSessionExpired("Session expired or missing. Please sign in again.");
         return;
     }
 
@@ -2264,31 +2240,27 @@ async function loadStarterHabitTemplates() {
                     recurrence: { frequency: "daily" }
                 });
 
-                const res = await fetch(`${getServerUrl()}/api/todo/create`, {
+                const res = await apiFetch(`${getServerUrl()}/api/todo/create`, {
                     method: "POST",
                     headers: {
-                        "Content-Type": "application/json",
-                        Authorization: `Bearer ${currentToken}`
+                        "Content-Type": "application/json"
                     },
                     body: JSON.stringify(payload)
                 });
 
-                if (!res.ok) {
-                    if (res.status === 401 || res.status === 403) {
-                        localStorage.removeItem("token");
-                        showToast("Session expired (HTTP 403). Please sign in again.", "error");
-                        setTimeout(() => {
-                            window.location.href = "login.html";
-                        }, 1000);
-                        return;
-                    }
+                if (res.ok) {
+                    const createdTask = await res.json();
+                    state.todos.push(parseTodoMetadata(createdTask));
                 }
             }
         }
         showToast("Starter habits loaded successfully! 🚀", "success");
-        loadTodos();
+        renderCurrentView();
+        updateAnalytics();
     } catch (e) {
-        handleFetchError(e, "Failed to load starter habits");
+        if (e.status !== 401 && e.status !== 403) {
+            handleFetchError(e, "Failed to load starter habits");
+        }
     }
 }
 
@@ -3830,9 +3802,13 @@ function closeConfirmModal(confirmed) {
 // Toast Notification Stack
 // -------------------------------------------------------------
 function showToast(message, type = "info") {
-    const container = document.getElementById("toast-container");
+    const container = typeof document !== "undefined" ? document.getElementById("toast-container") : null;
     if (!container) {
-        alert(message);
+        if (typeof alert === "function") {
+            try { alert(message); } catch (e) {}
+        } else {
+            console.log(`[Toast ${type}] ${message}`);
+        }
         return;
     }
 
@@ -4082,7 +4058,7 @@ async function submitDeleteAccount() {
         if (response.ok) {
             closeDeleteAccountModal();
             const email = getLoggedInEmail();
-            localStorage.removeItem("token");
+            clearAuthTokens();
             localStorage.removeItem("userEmail");
             if (email) {
                 localStorage.removeItem(`taskverse_prefs_${email}`);
@@ -4204,7 +4180,7 @@ document.addEventListener("DOMContentLoaded", function () {
     const onAuthPage = document.getElementById("login-form") || document.getElementById("register-form");
     if (onAuthPage) {
         const token = getToken();
-        if (token && !isTokenExpired(token)) {
+        if (token && (!isTokenExpired(token) || getRefreshToken())) {
             window.location.href = "todos.html";
             return;
         }
