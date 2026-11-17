@@ -1064,6 +1064,15 @@ function updateTodoStatus(todo, onRevert) {
                         },
                         body: JSON.stringify(healPayload)
                     });
+                    if (createRes.status === 401 || createRes.status === 403) {
+                        localStorage.removeItem("token");
+                        if (typeof onRevert === "function") onRevert();
+                        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
+                        setTimeout(() => {
+                            window.location.href = "login.html";
+                        }, 800);
+                        return;
+                    }
                     if (createRes.ok) {
                         const newlyCreated = await createRes.json();
                         const oldId = payload.id;
@@ -1074,9 +1083,12 @@ function updateTodoStatus(todo, onRevert) {
                             }
                         }
                         return newlyCreated;
+                    } else {
+                        if (typeof onRevert === "function") onRevert();
                     }
                 } catch (healErr) {
                     console.warn("Self-healing recreation failed:", healErr);
+                    if (typeof onRevert === "function") onRevert();
                 }
             }
             if (response.status === 401 || response.status === 403) {
@@ -1152,6 +1164,14 @@ function updateTodoDetails(taskData) {
                         },
                         body: JSON.stringify(healPayload)
                     });
+                    if (createRes.status === 401 || createRes.status === 403) {
+                        localStorage.removeItem("token");
+                        showToast("Session expired or access denied (HTTP 403). Please sign in again.", "error");
+                        setTimeout(() => {
+                            window.location.href = "login.html";
+                        }, 800);
+                        return;
+                    }
                     if (createRes.ok) {
                         return createRes.json();
                     }

@@ -48,8 +48,8 @@ public class TodoController {
     })
     @GetMapping("/{id}")
     ResponseEntity<Todo> getTodoById(@PathVariable long id) {
+        User user = getAuthenticatedUser();
         try {
-            User user = getAuthenticatedUser();
             Todo createdTodo = todoService.getTodoByIdAndUser(id, user);
             return new ResponseEntity<>(createdTodo, HttpStatus.OK);
         } catch (RuntimeException exception) {
@@ -75,8 +75,8 @@ public class TodoController {
     //Updating the Todo
     @PutMapping()
     ResponseEntity<Todo> updateTodo(@RequestBody Todo todo){
+        User user = getAuthenticatedUser();
         try {
-            User user = getAuthenticatedUser();
             return new ResponseEntity<>(todoService.updateTodo(todo, user), HttpStatus.OK);
         } catch (RuntimeException exception) {
             log.error("Failed to update todo: {}", exception.getMessage(), exception);
@@ -87,8 +87,8 @@ public class TodoController {
     //Updating the Todo by Path ID
     @PutMapping("/{id}")
     ResponseEntity<Todo> updateTodoById(@PathVariable Long id, @RequestBody Todo todo){
+        User user = getAuthenticatedUser();
         try {
-            User user = getAuthenticatedUser();
             todo.setId(id);
             return new ResponseEntity<>(todoService.updateTodo(todo, user), HttpStatus.OK);
         } catch (RuntimeException exception) {
@@ -100,8 +100,8 @@ public class TodoController {
     //Delete Todo by Id
     @DeleteMapping("/{id}")
     ResponseEntity<Void> deleteById(@PathVariable Long id){
+        User user = getAuthenticatedUser();
         try {
-            User user = getAuthenticatedUser();
             todoService.deleteTodoByIdAndUser(id, user);
             return new ResponseEntity<>(HttpStatus.NO_CONTENT);
         } catch (RuntimeException exception) {

@@ -31,7 +31,7 @@ const todosHtml = fs.readFileSync(path.join(__dirname, "todos.html"), "utf8");
 const loginHtml = fs.readFileSync(path.join(__dirname, "login.html"), "utf8");
 const registerHtml = fs.readFileSync(path.join(__dirname, "register.html"), "utf8");
 const scriptJs = fs.readFileSync(path.join(__dirname, "script.js"), "utf8");
-const styleCss = fs.readFileSync(path.join(__dirname, "style.css"), "utf8");
+const styleCss = fs.readFileSync(path.join(__dirname, "style.css"), "utf8").replace(/\r\n/g, "\n");
 
 runTest("UI-01: Login page form elements and autocomplete attributes", () => {
     assert(loginHtml.includes('id="email"'), "Login must contain email input");
