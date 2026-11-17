@@ -135,7 +135,14 @@ function handleFetchError(error, contextMsg = "Request failed") {
             );
         }
     } else {
-        showToast(error.message || contextMsg, "error");
+        let msg = error.userMessage || error.message || contextMsg;
+        try {
+            if (typeof msg === "string" && msg.trim().startsWith("{")) {
+                const parsed = JSON.parse(msg);
+                msg = parsed.message || parsed.error || contextMsg;
+            }
+        } catch (e) {}
+        showToast(msg, "error");
     }
 }
 
@@ -1131,19 +1138,50 @@ async function updateTodoStatus(todo, onRevert) {
         recurrence: todo.recurrence
     });
 
-    try {
-        let response = await apiFetch(`${getServerUrl()}/api/todo`, {
-            method: "PUT",
-            headers: {
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify(payload)
-        });
+    const hasValidNumericId = payload.id !== undefined && payload.id !== null && Number.isFinite(Number(payload.id)) && Number(payload.id) > 0;
 
-        // Self-heal: If /api/todo returned 404 (task id not found under current user in DB),
+    try {
+        let response;
+        if (!hasValidNumericId) {
+            const createPayload = { ...payload };
+            delete createPayload.id;
+            response = await apiFetch(`${getServerUrl()}/api/todo/create`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(createPayload)
+            });
+            if (response.ok) {
+                const newlyCreated = await response.json();
+                if (todo.id !== undefined && todo.id !== null) {
+                    const found = state.todos.find(t => t.id == todo.id);
+                    if (found) found.id = newlyCreated.id;
+                }
+                if (newlyCreated.id) {
+                    try {
+                        localStorage.setItem("taskverse_habit_dates_" + newlyCreated.id, JSON.stringify(payload.completedDates || []));
+                    } catch (e) {}
+                }
+                const msg = todo.completed ? "Mission completed! 🔥" : "Mission reopened";
+                showToast(msg, "info");
+                updateAnalytics();
+                renderMassMeterAndAchievements();
+                updateStreaks();
+                return newlyCreated;
+            }
+        } else {
+            response = await apiFetch(`${getServerUrl()}/api/todo`, {
+                method: "PUT",
+                headers: {
+                    "Content-Type": "application/json"
+                },
+                body: JSON.stringify(payload)
+            });
+        }
+
+        // Self-heal: If /api/todo returned 404 or 500 (id missing or legacy detached entity in DB),
         // recreate under authenticated user so completion state & metadata are preserved seamlessly
-        if (response.status === 404) {
-            console.info("Task ID not found on server during update; self-healing by creating task under authenticated user...");
+        if (response.status === 404 || response.status === 500) {
+            console.info("Task update encountered " + response.status + "; self-healing by creating task under authenticated user...");
             const healPayload = { ...payload };
             delete healPayload.id;
 
@@ -1184,7 +1222,20 @@ async function updateTodoStatus(todo, onRevert) {
         if (!response.ok) {
             if (typeof onRevert === "function") onRevert();
             const errorText = await response.text();
-            throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
+            let errMessage = `Failed to update task (HTTP ${response.status})`;
+            try {
+                if (errorText && errorText.trim().startsWith("{")) {
+                    const parsed = JSON.parse(errorText);
+                    errMessage = parsed.message || parsed.error || errMessage;
+                } else if (errorText) {
+                    errMessage = errorText;
+                }
+            } catch (e) {
+                if (errorText) errMessage = errorText;
+            }
+            const err = new Error(errMessage);
+            err.status = response.status;
+            throw err;
         }
 
         const updated = await response.json();
@@ -1225,8 +1276,8 @@ async function updateTodoDetails(taskData) {
             body: JSON.stringify(payload)
         });
 
-        if (response.status === 404) {
-            console.info("Task ID not found during details update; recreating...");
+        if (response.status === 404 || response.status === 500) {
+            console.info("Task update encountered " + response.status + " during details update; recreating...");
             const healPayload = { ...payload };
             delete healPayload.id;
 
@@ -1248,7 +1299,20 @@ async function updateTodoDetails(taskData) {
 
         if (!response.ok) {
             const errorText = await response.text();
-            throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
+            let errMessage = `Failed to update task (HTTP ${response.status})`;
+            try {
+                if (errorText && errorText.trim().startsWith("{")) {
+                    const parsed = JSON.parse(errorText);
+                    errMessage = parsed.message || parsed.error || errMessage;
+                } else if (errorText) {
+                    errMessage = errorText;
+                }
+            } catch (e) {
+                if (errorText) errMessage = errorText;
+            }
+            const err = new Error(errMessage);
+            err.status = response.status;
+            throw err;
         }
 
         closeTaskModal();
@@ -3801,7 +3865,17 @@ function closeConfirmModal(confirmed) {
 // -------------------------------------------------------------
 // Toast Notification Stack
 // -------------------------------------------------------------
+let lastToastMessage = "";
+let lastToastTime = 0;
+
 function showToast(message, type = "info") {
+    const now = Date.now();
+    if (message && message === lastToastMessage && now - lastToastTime < 1500) {
+        return;
+    }
+    lastToastMessage = message;
+    lastToastTime = now;
+
     const container = typeof document !== "undefined" ? document.getElementById("toast-container") : null;
     if (!container) {
         if (typeof alert === "function") {

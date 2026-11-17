@@ -27,11 +27,9 @@ public class Todo {
     @GeneratedValue
     private Long id;
 
-    @NotBlank
     @Schema(name = "title", example = "Todo Title")
     private String title;
 
-    @NotBlank
     @Column(columnDefinition = "TEXT")
     private String description;
 
@@ -39,7 +37,7 @@ public class Todo {
     @JsonAlias({"isCompleted", "completed"})
     private boolean isCompleted;
 
-    @ManyToOne
+    @ManyToOne(cascade = {jakarta.persistence.CascadeType.MERGE, jakarta.persistence.CascadeType.REFRESH})
     @JoinColumn(name = "user_id", nullable = true)
     @JsonIgnore
     private User user;

@@ -139,4 +139,14 @@ public class TodoController {
         log.warn("ResponseStatusException on todo operation: {} - {}", ex.getStatusCode(), ex.getReason());
         return ResponseEntity.status(ex.getStatusCode()).body(ex.getReason());
     }
+
+    @ExceptionHandler(Exception.class)
+    public ResponseEntity<Map<String, Object>> handleGenericException(Exception ex) {
+        log.error("Unhandled exception on todo operation: ", ex);
+        return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR).body(Map.of(
+                "status", 500,
+                "error", "Internal Server Error",
+                "message", ex.getMessage() != null ? ex.getMessage() : "An unexpected server error occurred"
+        ));
+    }
 }
