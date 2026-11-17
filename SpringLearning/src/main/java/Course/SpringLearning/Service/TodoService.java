@@ -47,6 +47,8 @@ public class TodoService {
             if (!existing.getUser().getId().equals(user.getId())) {
                 throw new AccessDeniedException("Access denied: You do not have permission to access or modify this task");
             }
+        } else if (existing.getUser() == null && user != null) {
+            existing.setUser(user);
         }
         return existing;
     }

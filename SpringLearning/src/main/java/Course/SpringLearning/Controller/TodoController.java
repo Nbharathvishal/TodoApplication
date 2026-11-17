@@ -70,6 +70,11 @@ public class TodoController {
         return new ResponseEntity<>(todoService.createTodo(todo, user), HttpStatus.CREATED);
     }
 
+    @PostMapping()
+    public ResponseEntity<Todo> createTodoRoot(@RequestBody Todo todo){
+        return createUser(todo);
+    }
+
     //Updating the Todo
     @PutMapping()
     public ResponseEntity<Todo> updateTodo(@RequestBody Todo todo){
@@ -115,6 +120,12 @@ public class TodoController {
         User user = getAuthenticatedUser();
         todoService.deleteTodoByIdAndUser(id, user);
         return new ResponseEntity<>(HttpStatus.NO_CONTENT);
+    }
+
+    @ExceptionHandler(org.springframework.security.core.userdetails.UsernameNotFoundException.class)
+    public ResponseEntity<String> handleUserNotFound(org.springframework.security.core.userdetails.UsernameNotFoundException ex) {
+        log.warn("Authenticated user not found in database: {}", ex.getMessage());
+        return ResponseEntity.status(HttpStatus.UNAUTHORIZED).body(ex.getMessage());
     }
 
     @ExceptionHandler(AccessDeniedException.class)

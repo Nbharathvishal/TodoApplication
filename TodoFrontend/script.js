@@ -136,6 +136,13 @@ const state = {
     isSubmittingTask: false
 };
 
+if (typeof window !== "undefined") {
+    window.state = state;
+}
+if (typeof globalThis !== "undefined") {
+    globalThis.state = state;
+}
+
 // -------------------------------------------------------------
 // Authentication Utilities (Preserved)
 // -------------------------------------------------------------
@@ -1579,7 +1586,9 @@ function renderCurrentView() {
 }
 
 function renderDashboardView() {
-    // Dashboard widgets (Daily Mass Meter, Streaks & Milestones) are updated via updateDashboardMetrics()
+    updateAnalytics();
+    renderMassMeterAndAchievements();
+    updateStreaks();
 }
 
 function renderTasksView() {
@@ -2731,10 +2740,16 @@ const achievementVideoManager = {
     listenersBound: false
 };
 
+if (typeof window !== "undefined") {
+    window.achievementVideoManager = achievementVideoManager;
+}
+if (typeof globalThis !== "undefined") {
+    globalThis.achievementVideoManager = achievementVideoManager;
+}
+
 function updateAchievementDebug() {
     const video = document.getElementById("achievement-video");
-    const todayTasks = state.todos.filter(t => t.dueDate === getTodayDateString());
-    const calc = getDailyAchievementCalculation(todayTasks);
+    const calc = getDailyHabitCompletion(getTodayDateString());
     const record = getDailyPlaybackRecord();
     const values = {
         "achievement-debug-time": getAchievementCurrentTime().toLocaleString(),
@@ -2812,7 +2827,44 @@ function isAtOrAfter4PM(date) {
     return d.getHours() >= 16;
 }
 
+function isHabitCompletedForDate(habit, dateStr) {
+    if (!habit) return false;
+    const compDates = Array.isArray(habit.completedDates) ? habit.completedDates : [];
+    return compDates.includes(dateStr) || (habit.dueDate === dateStr && Boolean(habit.completed));
+}
+
+function getDailyHabitCompletion(dateStr = getTodayDateString()) {
+    // Habits scheduled/eligible for dateStr from the Habit Tracker
+    const eligibleHabits = (state.todos || []).filter(t => isHabitScheduledForDate(t, dateStr));
+    const total = eligibleHabits.length;
+    const completed = eligibleHabits.filter(h => isHabitCompletedForDate(h, dateStr)).length;
+    const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
+
+    let stateKey = "EMPTY";
+    if (total === 0) {
+        stateKey = "EMPTY";
+    } else if (completed === total) {
+        stateKey = "KOLA_MASS";
+    } else if (completed > 0) {
+        stateKey = "PARTIAL";
+    } else {
+        stateKey = "CHOPPALANGI";
+    }
+
+    return {
+        total,
+        completed,
+        pct,
+        stateKey,
+        videoSrc: ACHIEVEMENT_VIDEO_MAP[stateKey] || null
+    };
+}
+
 function getDailyAchievementCalculation(todayTasks) {
+    // Default to daily habit completion if todayTasks not explicitly passed
+    if (!todayTasks) {
+        return getDailyHabitCompletion(getTodayDateString());
+    }
     const total = (todayTasks || []).length;
     const completed = (todayTasks || []).filter(t => Boolean(t.completed)).length;
     const pct = total === 0 ? 0 : Math.round((completed / total) * 100);
@@ -3077,13 +3129,19 @@ function onTaskCheckboxUpdated(updatedTodo) {
     const todayStr = getTodayDateString();
 
     // Optimistically update in memory to recalculate immediately
-    const idx = state.todos.findIndex(t => t.id === updatedTodo.id);
+    const idx = state.todos.findIndex(t => t.id == updatedTodo.id);
     if (idx !== -1) {
-        state.todos[idx] = { ...state.todos[idx], completed: updatedTodo.completed };
+        state.todos[idx] = { 
+            ...state.todos[idx], 
+            completed: updatedTodo.completed,
+            completedDates: Array.isArray(updatedTodo.completedDates) ? updatedTodo.completedDates : state.todos[idx].completedDates
+        };
     }
 
     // Update achievement display labels and meter, which triggers handleAchievementVideoSync
     renderMassMeterAndAchievements();
+    updateAnalytics();
+    updateStreaks();
 }
 
 function setupAchievementEventListeners() {
@@ -3091,10 +3149,9 @@ function setupAchievementEventListeners() {
     if (playBtn) {
         playBtn.addEventListener("click", function () {
             const todayStr = getTodayDateString();
-            const todayTasks = state.todos.filter(t => t.dueDate === todayStr);
-            const calc = getDailyAchievementCalculation(todayTasks);
-            if (calc.videoSrc) {
-                playAchievementVideo(calc.stateKey, calc.videoSrc);
+            const habitCalc = getDailyHabitCompletion(todayStr);
+            if (habitCalc.videoSrc) {
+                playAchievementVideo(habitCalc.stateKey, habitCalc.videoSrc);
             }
         });
     }
@@ -3107,10 +3164,9 @@ function setupAchievementEventListeners() {
             if (fallbackOverlay) fallbackOverlay.style.display = "none";
             if (video) {
                 const todayStr = getTodayDateString();
-                const todayTasks = state.todos.filter(t => t.dueDate === todayStr);
-                const calc = getDailyAchievementCalculation(todayTasks);
-                if (calc.videoSrc) {
-                    attemptAchievementPlayback(video, calc.stateKey, calc.videoSrc);
+                const habitCalc = getDailyHabitCompletion(todayStr);
+                if (habitCalc.videoSrc) {
+                    attemptAchievementPlayback(video, habitCalc.stateKey, habitCalc.videoSrc);
                 }
             }
         });
@@ -3119,10 +3175,18 @@ function setupAchievementEventListeners() {
 
 function renderMassMeterAndAchievements() {
     const todayStr = getTodayDateString();
-    const todayTasks = state.todos.filter(t => t.dueDate === todayStr);
 
-    const calc = getDailyAchievementCalculation(todayTasks);
-    const { total, completed, pct, stateKey } = calc;
+    // 1. TODAY'S EXECUTION (Tasks scheduled for today)
+    // Exclusively controls the numeric progress text and meter bar
+    const todayTasks = (state.todos || []).filter(t => t.dueDate === todayStr);
+    const todayTotal = todayTasks.length;
+    const todayCompleted = todayTasks.filter(t => Boolean(t.completed)).length;
+    const todayPct = todayTotal === 0 ? 0 : Math.round((todayCompleted / todayTotal) * 100);
+
+    // 2. DAILY HABIT COMPLETION (Habit Tracker source of truth)
+    // Exclusively controls Dashboard video playback and achievement state
+    const habitCalc = getDailyHabitCompletion(todayStr);
+    const { total, completed, pct, stateKey } = habitCalc;
 
     const card = document.getElementById("achievement-card");
     const badge = document.getElementById("achievement-badge");
@@ -3140,19 +3204,20 @@ function renderMassMeterAndAchievements() {
         dateElem.textContent = formatDateDisplay(todayStr);
     }
 
-    ratio.textContent = `${completed}/${total} Tasks (${pct}%)`;
-    fill.style.width = `${pct}%`;
+    // Today's Execution Progress (Independent of Habit Tracker video logic)
+    ratio.textContent = `${todayCompleted}/${todayTotal} Tasks (${todayPct}%)`;
+    fill.style.width = `${todayPct}%`;
 
     // Reset styles
     card.classList.remove("status-kola-mass", "status-partial", "status-choppalangi", "status-empty");
 
     if (stateKey === "EMPTY") {
-        // Empty State: Neutral, no tasks scheduled
+        // Empty State: Neutral, no habits scheduled
         card.classList.add("status-empty");
         if (icon) icon.textContent = "😎";
         if (badgeText) badgeText.textContent = "Daily Mass Meter";
         title.textContent = "Innaiku plan pannala machi 😎";
-        sub.textContent = "No tasks scheduled for today. Add a mission to start your daily mass!";
+        sub.textContent = "No habits scheduled for today. Add a mission to start your daily mass!";
         fill.style.backgroundColor = "var(--text-muted)";
     } else if (stateKey === "KOLA_MASS") {
         // Condition A: 100% completed (SAAREY KOLA MASS UH 🔥)
@@ -3189,8 +3254,23 @@ function renderMassMeterAndAchievements() {
         state.hasCelebratedKolaMassToday = false;
     }
 
-    // Synchronize achievement video & media section
-    handleAchievementVideoSync(calc);
+    // Synchronize achievement video & media section using habit calculation
+    handleAchievementVideoSync(habitCalc);
+}
+
+if (typeof window !== "undefined") {
+    window.getDailyHabitCompletion = getDailyHabitCompletion;
+    window.isHabitCompletedForDate = isHabitCompletedForDate;
+    window.renderMassMeterAndAchievements = renderMassMeterAndAchievements;
+    window.onTaskCheckboxUpdated = onTaskCheckboxUpdated;
+    window.renderDashboardView = renderDashboardView;
+}
+if (typeof globalThis !== "undefined") {
+    globalThis.getDailyHabitCompletion = getDailyHabitCompletion;
+    globalThis.isHabitCompletedForDate = isHabitCompletedForDate;
+    globalThis.renderMassMeterAndAchievements = renderMassMeterAndAchievements;
+    globalThis.onTaskCheckboxUpdated = onTaskCheckboxUpdated;
+    globalThis.renderDashboardView = renderDashboardView;
 }
 
 // -------------------------------------------------------------
@@ -3507,9 +3587,9 @@ function openCreateTaskModal(defaults = {}) {
     const title = document.getElementById("task-modal-title");
     const saveBtn = document.getElementById("modal-task-save-btn");
 
-    if (title) title.textContent = "Create New Mission";
+    if (title) title.textContent = state.currentView === "habits" ? "Create New Habit" : "Create New Mission";
     if (saveBtn) {
-        saveBtn.textContent = "Save Mission";
+        saveBtn.textContent = state.currentView === "habits" ? "Save Habit" : "Save Mission";
         saveBtn.disabled = false;
     }
 
@@ -3524,7 +3604,7 @@ function openCreateTaskModal(defaults = {}) {
     selectModalPriority(defaults.priority || "Medium");
 
     // Recurrence defaults
-    const repeatVal = defaults.repeat || "none";
+    const repeatVal = defaults.repeat || (state.currentView === "habits" ? "daily" : "none");
     const repeatSelect = document.getElementById("modal-task-repeat");
     if (repeatSelect) repeatSelect.value = repeatVal;
     handleRecurrenceChange(repeatVal);
