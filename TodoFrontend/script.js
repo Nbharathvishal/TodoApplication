@@ -74,12 +74,19 @@ function handleFetchError(error, contextMsg = "Request failed") {
     const current = getServerUrl();
     const isLocalTarget = current.includes("localhost") || current.includes("127.0.0.1");
 
-    if (error && error.message && (error.message.includes("403") || error.message.includes("401") || error.message.includes("Session expired"))) {
+    // 401 Unauthorized: Credentials invalid or session genuinely expired -> logout & redirect
+    if (error && (error.status === 401 || (error.message && (error.message.includes("401") || error.message.includes("Session expired"))))) {
         localStorage.removeItem("token");
-        showToast("Session expired or access denied (HTTP 403). Please sign in again.", "error");
+        showToast("Session expired. Please sign in again.", "error");
         setTimeout(() => {
             window.location.href = "login.html";
         }, 1200);
+        return;
+    }
+
+    // 403 Forbidden: User authenticated but lacks permission -> show permission error, DO NOT log out
+    if (error && (error.status === 403 || (error.message && error.message.includes("403")))) {
+        showToast(error.userMessage || "Access denied: You do not have permission to modify this task.", "error");
         return;
     }
 
@@ -834,9 +841,14 @@ function loadTodos() {
     })
     .then(response => {
         if (!response.ok) {
-            if (response.status === 401 || response.status === 403) {
+            if (response.status === 401) {
                 localStorage.removeItem("token");
                 throw new Error("Session expired. Please log in again.");
+            }
+            if (response.status === 403) {
+                const err = new Error("Access denied: You do not have permission to view these tasks.");
+                err.status = 403;
+                throw err;
             }
             throw new Error("Failed to load Todos");
         }
@@ -974,12 +986,16 @@ async function addTodo(taskData = {}) {
         clearTimeout(timeoutTimer);
 
         if (!res.ok) {
-            if (res.status === 401 || res.status === 403) {
+            if (res.status === 401) {
                 localStorage.removeItem("token");
-                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                showToast("Session expired. Please sign in again.", "error");
                 setTimeout(() => {
                     window.location.href = "login.html";
                 }, 1000);
+                return;
+            }
+            if (res.status === 403) {
+                showToast("Access denied: You do not have permission to create this task.", "error");
                 return;
             }
             const errorMsg = await res.text();
@@ -1020,7 +1036,7 @@ function updateTodoStatus(todo, onRevert) {
     if (!currentToken || isTokenExpired(currentToken)) {
         if (typeof onRevert === "function") onRevert();
         localStorage.removeItem("token");
-        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
+        showToast("Session expired. Please log in again.", "error");
         setTimeout(() => {
             window.location.href = "login.html";
         }, 800);
@@ -1064,13 +1080,18 @@ function updateTodoStatus(todo, onRevert) {
                         },
                         body: JSON.stringify(healPayload)
                     });
-                    if (createRes.status === 401 || createRes.status === 403) {
+                    if (createRes.status === 401) {
                         localStorage.removeItem("token");
                         if (typeof onRevert === "function") onRevert();
-                        showToast("Session expired or access denied (HTTP 403). Please log in again.", "error");
+                        showToast("Session expired. Please log in again.", "error");
                         setTimeout(() => {
                             window.location.href = "login.html";
                         }, 800);
+                        return;
+                    }
+                    if (createRes.status === 403) {
+                        if (typeof onRevert === "function") onRevert();
+                        showToast("Access denied: You do not have permission to create this task.", "error");
                         return;
                     }
                     if (createRes.ok) {
@@ -1091,16 +1112,28 @@ function updateTodoStatus(todo, onRevert) {
                     if (typeof onRevert === "function") onRevert();
                 }
             }
-            if (response.status === 401 || response.status === 403) {
+            if (response.status === 401) {
                 localStorage.removeItem("token");
-                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                if (typeof onRevert === "function") onRevert();
+                showToast("Session expired. Please sign in again.", "error");
                 setTimeout(() => {
                     window.location.href = "login.html";
                 }, 1000);
-                throw new Error("Session expired or access denied (HTTP 403)");
+                const err = new Error("Session expired (HTTP 401)");
+                err.status = 401;
+                throw err;
+            }
+            if (response.status === 403) {
+                if (typeof onRevert === "function") onRevert();
+                showToast("Access denied: You do not have permission to modify this task.", "error");
+                const err = new Error("Access denied (HTTP 403)");
+                err.status = 403;
+                throw err;
             }
             const errorText = await response.text();
-            throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
+            const err = new Error(errorText || `Failed to update task (HTTP ${response.status})`);
+            err.status = response.status;
+            throw err;
         }
         return response.json();
     })
@@ -1164,12 +1197,16 @@ function updateTodoDetails(taskData) {
                         },
                         body: JSON.stringify(healPayload)
                     });
-                    if (createRes.status === 401 || createRes.status === 403) {
+                    if (createRes.status === 401) {
                         localStorage.removeItem("token");
-                        showToast("Session expired or access denied (HTTP 403). Please sign in again.", "error");
+                        showToast("Session expired. Please sign in again.", "error");
                         setTimeout(() => {
                             window.location.href = "login.html";
                         }, 800);
+                        return;
+                    }
+                    if (createRes.status === 403) {
+                        showToast("Access denied: You do not have permission to create this task.", "error");
                         return;
                     }
                     if (createRes.ok) {
@@ -1179,13 +1216,21 @@ function updateTodoDetails(taskData) {
                     console.warn("Self-healing recreation failed:", healErr);
                 }
             }
-            if (response.status === 401 || response.status === 403) {
+            if (response.status === 401) {
                 localStorage.removeItem("token");
-                showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                showToast("Session expired. Please sign in again.", "error");
                 setTimeout(() => {
                     window.location.href = "login.html";
                 }, 1000);
-                throw new Error("Session expired or access denied (HTTP 403)");
+                const err = new Error("Session expired (HTTP 401)");
+                err.status = 401;
+                throw err;
+            }
+            if (response.status === 403) {
+                showToast("Access denied: You do not have permission to edit this task.", "error");
+                const err = new Error("Access denied (HTTP 403)");
+                err.status = 403;
+                throw err;
             }
             const errorText = await response.text();
             throw new Error(errorText || `Failed to update task (HTTP ${response.status})`);
@@ -1229,13 +1274,21 @@ function deleteTodo(id) {
         })
         .then(async response => {
             if (!response.ok) {
-                if (response.status === 401 || response.status === 403) {
+                if (response.status === 401) {
                     localStorage.removeItem("token");
-                    showToast("Access forbidden or session expired (HTTP 403). Please sign in again.", "error");
+                    showToast("Session expired. Please sign in again.", "error");
                     setTimeout(() => {
                         window.location.href = "login.html";
                     }, 1000);
-                    throw new Error("Session expired or access denied (HTTP 403)");
+                    const err = new Error("Session expired (HTTP 401)");
+                    err.status = 401;
+                    throw err;
+                }
+                if (response.status === 403) {
+                    showToast("Access denied: You do not have permission to delete this task.", "error");
+                    const err = new Error("Access denied (HTTP 403)");
+                    err.status = 403;
+                    throw err;
                 }
                 const errorText = await response.text();
                 throw new Error(errorText || `Failed to delete mission (HTTP ${response.status})`);
